@@ -21,6 +21,7 @@
 
 #include "ldpc.h"
 #include <string.h>
+#include <stdlib.h>
 
 /*
  * Select the appropriate LDPC table based on MODCOD parameters.
@@ -42,6 +43,9 @@ int dvbs2x_ldpc_encoder_init(struct dvbs2x_ldpc_encoder *enc,
 	enc->code.q = modcod->q_ldpc;
 	enc->code.num_groups = num_groups;
 	enc->code.table = table;
+	enc->xp = modcod->xp;
+	enc->p_period = modcod->p_period;
+	enc->xs = modcod->xs;
 
 	return 0;
 }

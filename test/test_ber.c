@@ -93,7 +93,7 @@ static double test_ber(unsigned int modcod_idx, double esn0_db,
 	double noise_var;
 	double esn0_lin;
 	unsigned int i;
-	int ret;
+	int ret __attribute__((unused));
 
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
 	if (!mc)

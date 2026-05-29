@@ -87,6 +87,11 @@ struct dvbs2x_modcod {
 	unsigned int		bch_t;		/* BCH correction capability */
 	unsigned int		k_ldpc;		/* LDPC info bits = n_bch */
 	unsigned int		q_ldpc;		/* LDPC circulant size */
+	/* Puncturing/shortening parameters */
+	unsigned int		xs;		/* shortening: zero-prepend */
+	unsigned int		xp;		/* puncturing: removed parity */
+	unsigned int		p_period;	/* puncturing period */
+	unsigned int		nbch_eff;	/* effective BCH bits (k_ldpc - xs) */
 };
 
 /* Modulator configuration */

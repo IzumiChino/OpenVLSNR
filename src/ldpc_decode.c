@@ -173,6 +173,9 @@ int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 	dec->code.table = table;
 	dec->max_iter = max_iter;
 	dec->offset = LDPC_MS_OFFSET;
+	dec->xp = modcod->xp;
+	dec->p_period = modcod->p_period;
+	dec->xs = modcod->xs;
 
 	return 0;
 }
@@ -183,7 +186,7 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 {
 	unsigned int n = dec->code.n;
 	unsigned int k = dec->code.k;
-	unsigned int m = n - k;
+	unsigned int m = n - k;		/* transmitted parity bits */
 	struct ldpc_csr csr;
 	double *vn_llr;		/* total VN belief */
 	double *edge_msg;	/* CN-to-VN messages (one per edge) */
@@ -192,7 +195,13 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	int ret = -1;
 	int converged;
 
-	/* Build H matrix in CSR format */
+	/*
+	 * Build H matrix in CSR format.
+	 * Use the transmitted code dimensions (k info + m parity).
+	 * The staircase parity structure handles the accumulator.
+	 * Puncturing is handled by the encoder producing the correct
+	 * codeword for the transmitted (post-puncture) code.
+	 */
 	if (build_csr(&dec->code, &csr) < 0)
 		return -1;
 
@@ -207,7 +216,14 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	for (i = 0; i < n; i++)
 		vn_llr[i] = llr[i];
 
-	/* Iterative decoding (flooding schedule) */
+	/*
+	 * Note: shortening (xs > 0) is handled at the system level.
+	 * The caller should set the first xs LLR positions to a large
+	 * positive value before calling this function if shortening
+	 * is used.
+	 */
+
+	/* Iterative decoding (layered schedule) */
 	for (iter = 0; iter < dec->max_iter; iter++) {
 
 		/* For each check node (row of H) */
@@ -222,11 +238,11 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 			if (degree == 0)
 				continue;
 
-			/* Compute VN-to-CN messages and find min */
+			/* Find min and sign product */
 			sign_prod = 1.0;
 			min1 = 1e30;
 			min2 = 1e30;
-			min1_pos = 0;
+			min1_pos = row_start;
 
 			for (j = row_start; j < row_end; j++) {
 				unsigned int vn = csr.col_idx[j];
@@ -245,7 +261,7 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 				}
 			}
 
-			/* Update CN-to-VN messages and VN beliefs */
+			/* Update CN-to-VN messages */
 			for (j = row_start; j < row_end; j++) {
 				unsigned int vn = csr.col_idx[j];
 				double v2c = vn_llr[vn] - edge_msg[j];
@@ -253,12 +269,10 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 				double msg_abs;
 				double new_msg;
 
-				/* Sign: product of all other signs */
 				msg_sign = sign_prod;
 				if (v2c < 0)
 					msg_sign = -msg_sign;
 
-				/* Magnitude: min of all others - offset */
 				if (j == min1_pos)
 					msg_abs = min2 - dec->offset;
 				else
@@ -269,7 +283,6 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 
 				new_msg = msg_sign * msg_abs;
 
-				/* Update VN belief (layered update) */
 				vn_llr[vn] += new_msg - edge_msg[j];
 				edge_msg[j] = new_msg;
 			}
@@ -313,3 +326,4 @@ out:
 	free_csr(&csr);
 	return ret;
 }
+

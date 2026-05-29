@@ -41,6 +41,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 14400,
 		.q_ldpc		= 140,
+		.xs		= 0,
+		.xp		= 3240,
+		.p_period	= 15,
+		.nbch_eff	= 14400,
 	},
 	/* Index 2: BPSK 1/5, medium frame */
 	{
@@ -58,6 +62,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 6480,
 		.q_ldpc		= 72,
+		.xs		= 640,
+		.xp		= 980,
+		.p_period	= 25,
+		.nbch_eff	= 5840,
 	},
 	/* Index 3: BPSK 11/45, medium frame */
 	{
@@ -75,6 +83,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 7920,
 		.q_ldpc		= 68,
+		.xs		= 0,
+		.xp		= 1620,
+		.p_period	= 15,
+		.nbch_eff	= 7920,
 	},
 	/* Index 4: BPSK 1/3, medium frame */
 	{
@@ -92,6 +104,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 10800,
 		.q_ldpc		= 60,
+		.xs		= 0,
+		.xp		= 1620,
+		.p_period	= 13,
+		.nbch_eff	= 10800,
 	},
 	/* Index 5: BPSK-S 1/5, short frame (spread) */
 	{
@@ -109,6 +125,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 3240,
 		.q_ldpc		= 135,
+		.xs		= 560,
+		.xp		= 250,
+		.p_period	= 30,
+		.nbch_eff	= 2680,
 	},
 	/* Index 6: BPSK-S 11/45, short frame (spread) */
 	{
@@ -126,6 +146,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 3960,
 		.q_ldpc		= 34,
+		.xs		= 0,
+		.xp		= 810,
+		.p_period	= 15,
+		.nbch_eff	= 3960,
 	},
 	/* Index 7: BPSK 1/5, short frame */
 	{
@@ -143,6 +167,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 3240,
 		.q_ldpc		= 135,
+		.xs		= 0,
+		.xp		= 1224,
+		.p_period	= 10,
+		.nbch_eff	= 3240,
 	},
 	/* Index 8: BPSK 4/15, short frame */
 	{
@@ -160,6 +188,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 4320,
 		.q_ldpc		= 33,
+		.xs		= 0,
+		.xp		= 1224,
+		.p_period	= 8,
+		.nbch_eff	= 4320,
 	},
 	/* Index 9: BPSK 1/3, short frame */
 	{
@@ -177,6 +209,10 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.bch_t		= 12,
 		.k_ldpc		= 5400,
 		.q_ldpc		= 120,
+		.xs		= 0,
+		.xp		= 1224,
+		.p_period	= 8,
+		.nbch_eff	= 5400,
 	},
 };
 
