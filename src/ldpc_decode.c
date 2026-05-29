@@ -20,8 +20,8 @@
 #include <math.h>
 #include <stdlib.h>
 
-/* Default min-sum offset */
-#define LDPC_MS_OFFSET	0.15
+/* Default normalized min-sum scaling factor */
+#define LDPC_NMS_FACTOR	0.75
 
 /* CSR sparse matrix */
 struct ldpc_csr {
@@ -172,7 +172,7 @@ int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 	dec->code.num_groups = num_groups;
 	dec->code.table = table;
 	dec->max_iter = max_iter;
-	dec->offset = LDPC_MS_OFFSET;
+	dec->offset = LDPC_NMS_FACTOR;
 	dec->xp = modcod->xp;
 	dec->p_period = modcod->p_period;
 	dec->xs = modcod->xs;
@@ -261,7 +261,7 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 				}
 			}
 
-			/* Update CN-to-VN messages */
+			/* Update CN-to-VN messages (normalized min-sum) */
 			for (j = row_start; j < row_end; j++) {
 				unsigned int vn = csr.col_idx[j];
 				double v2c = vn_llr[vn] - edge_msg[j];
@@ -274,12 +274,9 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 					msg_sign = -msg_sign;
 
 				if (j == min1_pos)
-					msg_abs = min2 - dec->offset;
+					msg_abs = min2 * dec->offset;
 				else
-					msg_abs = min1 - dec->offset;
-
-				if (msg_abs < 0.0)
-					msg_abs = 0.0;
+					msg_abs = min1 * dec->offset;
 
 				new_msg = msg_sign * msg_abs;
 
