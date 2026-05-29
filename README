@@ -1,0 +1,61 @@
+DVB-S2X VL-SNR Modulator/Demodulator
+
+This is an implementation of the DVB-S2X Very Low Signal-to-Noise
+Ratio (VL-SNR) physical layer, covering all 9 MODCODs defined in
+ETSI EN 302 307-2.  Operating range is -2 dB to -10 dB Es/N0.
+
+Build
+-----
+
+	make
+	make DEBUG=1		# debug build
+	make test		# run unit tests
+	make clean
+
+Requirements: GCC with C11 support, libm.
+
+Structure
+---------
+
+	include/	Public headers
+	src/		Library source
+	tables/		LDPC parity address tables
+	test/		Unit tests
+
+The build produces libdvbs2x_vlsnr.a (static library).
+
+Signal Chain
+------------
+
+Transmitter:
+
+	User data -> BB frame -> BCH -> LDPC -> interleave ->
+	modulate (pi/2-BPSK or QPSK) -> spread (optional) ->
+	PL frame (header + WH header + pilots) -> scramble ->
+	RRC pulse shape -> baseband IQ
+
+Receiver:
+
+	Baseband IQ -> RRC matched filter -> timing recovery ->
+	coarse freq (BQ-FED) -> frame sync (WH correlation) ->
+	fine freq (pilot-aided) -> phase est -> descramble ->
+	pilot extract -> despread (optional) -> soft demap ->
+	deinterleave -> LDPC decode -> BCH decode -> BB frame
+	parse -> user data
+
+Status
+------
+
+LDPC parity address tables are placeholders.  Real values from
+ETSI EN 302 307-2 Annex B must be transcribed before the LDPC
+decoder will converge at operational SNR.
+
+References
+----------
+
+ETSI EN 302 307-1 V1.4.1	DVB-S2 base standard
+ETSI EN 302 307-2 V1.3.1	DVB-S2X extensions
+ETSI TR 102 376-1		Implementation guidelines
+ETSI TR 102 376-2		S2X implementation guidelines
+
+License: GPL-2.0-or-later
