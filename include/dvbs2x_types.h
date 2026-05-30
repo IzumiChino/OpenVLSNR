@@ -21,9 +21,9 @@
 #define DVBS2X_PLSC_LEN		64
 #define DVBS2X_PLHEADER_LEN	90
 
-/* VL-SNR Header (896-symbol Walsh-Hadamard sequence) */
-#define DVBS2X_VLSNR_WH_LEN	896
-#define DVBS2X_VLSNR_HDR_LEN	DVBS2X_VLSNR_WH_LEN
+/* VL-SNR Header (per ETSI EN 302 307-2 clause 5.5.2.5) */
+#define DVBS2X_VLSNR_WH_LEN	896	/* WH sequence length (bits) */
+#define DVBS2X_VLSNR_HDR_LEN	900	/* total header: 2+896+2 symbols */
 
 /* VL-SNR frame symbol lengths */
 #define DVBS2X_VLSNR_FRAME_LONG		33282

@@ -238,7 +238,7 @@ static void residual_carrier_track(struct dvbs2x_complex *sym,
 	double ph[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
 	double wt[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
 	unsigned int ns = 0;
-	unsigned int data_start = wh_start + DVBS2X_VLSNR_WH_LEN;
+	unsigned int data_start = wh_start + DVBS2X_VLSNR_WH_LEN + 2;
 	unsigned int blk_off, n;
 	double ci, cq;
 	double sw, swp, swt, swpp, swpt, denom, a, b;
@@ -411,7 +411,7 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	demod->modcod = mc;
 
 	frame_geometry(mc, &num_tx_sym, &data_field_len);
-	data_start = wh_start + DVBS2X_VLSNR_WH_LEN;
+	data_start = wh_start + DVBS2X_VLSNR_WH_LEN + 2;
 	if (getenv("DVBS2X_DEBUG"))
 		fprintf(stderr,
 			"[dbg] wh_start=%u modcod=%u conf=%.3f tx_sym=%u "
@@ -422,13 +422,13 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 		goto out;
 
 	/* Carrier recovery */
-	wh_ref = malloc(DVBS2X_VLSNR_WH_LEN * sizeof(struct dvbs2x_complex));
+	wh_ref = malloc(DVBS2X_VLSNR_HDR_LEN * sizeof(struct dvbs2x_complex));
 	if (!wh_ref)
 		goto out;
 	dvbs2x_vlsnr_header_generate(mc, wh_ref);
 
 	/* Estimate noise/SNR from the header (robust to small offsets) */
-	nv_est = estimate_noise_var(work, wh_start, wh_ref);
+	nv_est = estimate_noise_var(work, wh_start, wh_ref + 2);
 	esn0_db = 10.0 * log10(1.0 / (2.0 * nv_est + 1e-12));
 	if (getenv("DVBS2X_DEBUG"))
 		fprintf(stderr, "[dbg] nv_est=%.4f esn0_est=%.2f dB\n",
@@ -441,7 +441,8 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	 * is not applied as pre-correction.
 	 */
 	if (demod->state != DVBS2X_DEMOD_SEARCH)
-		dvbs2x_afc_update(&demod->afc, work, wh_start, wh_ref);
+		dvbs2x_afc_update(&demod->afc, work, wh_start,
+				  wh_ref + 2);
 
 	/*
 	 * Single-frame coarse frequency correction (L&R): only applied
@@ -449,8 +450,8 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	 * At low SNR the AFC pre-correction + residual tracker suffice.
 	 */
 	coarse_freq_recover(work, wh_start,
-			    DVBS2X_VLSNR_WH_LEN + data_field_len, wh_ref,
-			    esn0_db);
+			    DVBS2X_VLSNR_WH_LEN + 2 + data_field_len,
+			    wh_ref + 2, esn0_db);
 
 	/* Descramble the data field (payload + pilots) */
 	dvbs2x_scrambler_reset(&demod->descrambler);
@@ -458,8 +459,8 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			  data_field_len);
 
 	/* Residual phase/frequency tracking from header + pilots */
-	residual_carrier_track(work, wh_start, data_field_len, num_tx_sym,
-			       wh_ref);
+	residual_carrier_track(work, wh_start, data_field_len,
+			       num_tx_sym, wh_ref + 2);
 
 	/* Extract pilots and data symbols */
 	data_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
