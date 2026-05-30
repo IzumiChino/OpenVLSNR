@@ -19,8 +19,8 @@
 /* RRC filter state */
 struct dvbs2x_rrc_filter {
 	double		coeffs[DVBS2X_FILTER_MAX_TAPS];
-	double		delay_i[DVBS2X_FILTER_MAX_TAPS];
-	double		delay_q[DVBS2X_FILTER_MAX_TAPS];
+	double		delay_i[DVBS2X_FILTER_MAX_TAPS * 2];
+	double		delay_q[DVBS2X_FILTER_MAX_TAPS * 2];
 	unsigned int	num_taps;
 	unsigned int	sps;		/* samples per symbol */
 	double		rolloff;

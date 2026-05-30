@@ -100,53 +100,77 @@ void dvbs2x_rrc_filter_reset(struct dvbs2x_rrc_filter *flt)
 	flt->delay_idx = 0;
 }
 
+/*
+ * Linear convolution helper: compute dot product of the coefficient
+ * array with a contiguous segment of the delay line.  The delay line
+ * is maintained as a double-length linear buffer (mirror writes) so
+ * this inner loop has no branches and auto-vectorizes cleanly.
+ */
+static inline void filter_one(struct dvbs2x_rrc_filter *flt,
+			      double in_i, double in_q,
+			      double *out_i, double *out_q)
+{
+	unsigned int idx = flt->delay_idx;
+	unsigned int nt = flt->num_taps;
+	const double *c = flt->coeffs;
+	const double *di, *dq;
+	double si = 0.0, sq = 0.0;
+	unsigned int k;
+
+	/* Write to both halves of the double-length buffer */
+	flt->delay_i[idx] = in_i;
+	flt->delay_i[idx + nt] = in_i;
+	flt->delay_q[idx] = in_q;
+	flt->delay_q[idx + nt] = in_q;
+
+	/*
+	 * The newest sample is at idx; oldest at idx+1 (wrapped).
+	 * Reading from idx downward in the double buffer gives a
+	 * contiguous block: delay_i[idx+1 .. idx+nt].
+	 * Coefficients are stored newest-first, so we read the
+	 * delay line starting at idx going backward = idx+nt-k.
+	 * Equivalently: di[nt - 1 - k] with di = &delay_i[idx+1].
+	 */
+	di = &flt->delay_i[idx + 1];
+	dq = &flt->delay_q[idx + 1];
+
+	for (k = 0; k < nt; k++) {
+		si += di[nt - 1 - k] * c[k];
+		sq += dq[nt - 1 - k] * c[k];
+	}
+
+	*out_i = si;
+	*out_q = sq;
+
+	/* Advance write pointer */
+	idx++;
+	if (idx >= nt)
+		idx = 0;
+	flt->delay_idx = idx;
+}
+
 void dvbs2x_rrc_upsample(struct dvbs2x_rrc_filter *flt,
 			  const struct dvbs2x_complex *in,
 			  unsigned int in_len,
 			  struct dvbs2x_complex *out,
 			  unsigned int *out_len)
 {
-	unsigned int n, s, k;
+	unsigned int n, s;
 	unsigned int out_idx = 0;
-	unsigned int idx;
 
 	for (n = 0; n < in_len; n++) {
 		for (s = 0; s < flt->sps; s++) {
-			double sample_i;
-			double sample_q;
+			double si, sq;
 
-			/* Insert sample (or zero for interpolation) */
-			if (s == 0) {
-				flt->delay_i[flt->delay_idx] = in[n].i;
-				flt->delay_q[flt->delay_idx] = in[n].q;
-			} else {
-				flt->delay_i[flt->delay_idx] = 0.0;
-				flt->delay_q[flt->delay_idx] = 0.0;
-			}
+			if (s == 0)
+				filter_one(flt, in[n].i, in[n].q,
+					   &si, &sq);
+			else
+				filter_one(flt, 0.0, 0.0, &si, &sq);
 
-			/* Compute filter output */
-			sample_i = 0.0;
-			sample_q = 0.0;
-			idx = flt->delay_idx;
-
-			for (k = 0; k < flt->num_taps; k++) {
-				sample_i += flt->delay_i[idx] * flt->coeffs[k];
-				sample_q += flt->delay_q[idx] * flt->coeffs[k];
-
-				if (idx == 0)
-					idx = flt->num_taps - 1;
-				else
-					idx--;
-			}
-
-			out[out_idx].i = sample_i;
-			out[out_idx].q = sample_q;
+			out[out_idx].i = si;
+			out[out_idx].q = sq;
 			out_idx++;
-
-			/* Advance delay line index */
-			flt->delay_idx++;
-			if (flt->delay_idx >= flt->num_taps)
-				flt->delay_idx = 0;
 		}
 	}
 
@@ -159,34 +183,11 @@ void dvbs2x_rrc_filter_apply(struct dvbs2x_rrc_filter *flt,
 			     struct dvbs2x_complex *out,
 			     unsigned int *out_len)
 {
-	unsigned int n, k;
-	unsigned int idx;
+	unsigned int n;
 
-	for (n = 0; n < in_len; n++) {
-		/* Insert new sample */
-		flt->delay_i[flt->delay_idx] = in[n].i;
-		flt->delay_q[flt->delay_idx] = in[n].q;
-
-		/* Compute filter output */
-		out[n].i = 0.0;
-		out[n].q = 0.0;
-		idx = flt->delay_idx;
-
-		for (k = 0; k < flt->num_taps; k++) {
-			out[n].i += flt->delay_i[idx] * flt->coeffs[k];
-			out[n].q += flt->delay_q[idx] * flt->coeffs[k];
-
-			if (idx == 0)
-				idx = flt->num_taps - 1;
-			else
-				idx--;
-		}
-
-		/* Advance delay line */
-		flt->delay_idx++;
-		if (flt->delay_idx >= flt->num_taps)
-			flt->delay_idx = 0;
-	}
+	for (n = 0; n < in_len; n++)
+		filter_one(flt, in[n].i, in[n].q,
+			   &out[n].i, &out[n].q);
 
 	*out_len = in_len;
 }

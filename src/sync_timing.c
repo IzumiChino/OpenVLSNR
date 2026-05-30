@@ -83,6 +83,7 @@ void dvbs2x_timing_sync_process(struct dvbs2x_timing_sync *ts,
 	double cr = 0.0, ci = 0.0;
 	double tau, off;
 	unsigned int n, m;
+	double cos_tbl[16], sin_tbl[16];
 
 	if (sps < 2 || in_len < sps) {
 		memcpy(out, in, in_len * sizeof(*in));
@@ -90,13 +91,21 @@ void dvbs2x_timing_sync_process(struct dvbs2x_timing_sync *ts,
 		return;
 	}
 
+	/* Precompute cos/sin for the sps phase offsets */
+	for (n = 0; n < sps && n < 16; n++) {
+		double ang = -2.0 * M_PI * (double)n / (double)sps;
+
+		cos_tbl[n] = cos(ang);
+		sin_tbl[n] = sin(ang);
+	}
+
 	/* Oerder-Meyr spectral-line timing estimate */
 	for (n = 0; n < in_len; n++) {
 		double e = in[n].i * in[n].i + in[n].q * in[n].q;
-		double ang = -2.0 * M_PI * (double)(n % sps) / (double)sps;
+		unsigned int phase = n % sps;
 
-		cr += e * cos(ang);
-		ci += e * sin(ang);
+		cr += e * cos_tbl[phase];
+		ci += e * sin_tbl[phase];
 	}
 
 	/* Optimum sampling instant within a symbol, in samples [0, sps) */

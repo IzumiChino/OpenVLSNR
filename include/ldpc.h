@@ -58,6 +58,12 @@ struct dvbs2x_ldpc_decoder {
 	unsigned int		*csr_col_idx;
 	unsigned int		csr_num_edges;
 	unsigned int		csr_max_deg;
+	/* Pre-allocated working memory (avoids per-frame malloc) */
+	double			*work_vn;	/* n doubles */
+	double			*work_edge;	/* num_edges doubles */
+	double			*work_v2c;	/* max_deg+1 doubles */
+	double			*work_fwd;	/* max_deg+1 doubles */
+	double			*work_bwd;	/* max_deg+1 doubles */
 };
 
 /*

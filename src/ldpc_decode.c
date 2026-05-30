@@ -258,6 +258,19 @@ int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 			dec->csr_max_deg = deg;
 	}
 
+	/* Pre-allocate working memory for decode() */
+	dec->work_vn = malloc(dec->code.n * sizeof(double));
+	dec->work_edge = malloc(dec->csr_num_edges * sizeof(double));
+	dec->work_v2c = malloc((dec->csr_max_deg + 1) * sizeof(double));
+	dec->work_fwd = malloc((dec->csr_max_deg + 1) * sizeof(double));
+	dec->work_bwd = malloc((dec->csr_max_deg + 1) * sizeof(double));
+
+	if (!dec->work_vn || !dec->work_edge || !dec->work_v2c ||
+	    !dec->work_fwd || !dec->work_bwd) {
+		dvbs2x_ldpc_decoder_free(dec);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -265,9 +278,22 @@ void dvbs2x_ldpc_decoder_free(struct dvbs2x_ldpc_decoder *dec)
 {
 	free(dec->csr_row_ptr);
 	free(dec->csr_col_idx);
+	free(dec->work_vn);
+	free(dec->work_edge);
+	free(dec->work_v2c);
+	free(dec->work_fwd);
+	free(dec->work_bwd);
 	dec->csr_row_ptr = NULL;
 	dec->csr_col_idx = NULL;
+	dec->work_vn = NULL;
+	dec->work_edge = NULL;
+	dec->work_v2c = NULL;
+	dec->work_fwd = NULL;
+	dec->work_bwd = NULL;
 }
+
+/* Check convergence every CONV_CHECK_PERIOD iterations */
+#define CONV_CHECK_PERIOD	5
 
 int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 		       const double *llr, uint8_t *output,
@@ -278,36 +304,28 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	unsigned int m = n - k;
 	const unsigned int *row_ptr = dec->csr_row_ptr;
 	const unsigned int *col_idx = dec->csr_col_idx;
-	unsigned int max_deg = dec->csr_max_deg;
-	double *vn_llr;
-	double *edge_msg;
-	double *v2c = NULL;
-	double *fwd = NULL;
-	double *bwd = NULL;
+	double *vn_llr = dec->work_vn;
+	double *edge_msg = dec->work_edge;
+	double *v2c = dec->work_v2c;
+	double *fwd = dec->work_fwd;
+	double *bwd = dec->work_bwd;
 	unsigned int iter;
 	unsigned int i, j;
 	int ret = -1;
 	int converged = 0;
 
-	if (!row_ptr || !col_idx)
+	if (!row_ptr || !col_idx || !vn_llr)
 		return -1;
 
 	if (!boxplus_lut_init)
 		init_boxplus_lut();
 
-	/* Allocate working memory */
-	vn_llr = malloc(n * sizeof(double));
-	edge_msg = calloc(dec->csr_num_edges, sizeof(double));
-	v2c = malloc((max_deg + 1) * sizeof(double));
-	fwd = malloc((max_deg + 1) * sizeof(double));
-	bwd = malloc((max_deg + 1) * sizeof(double));
-
-	if (!vn_llr || !edge_msg || !v2c || !fwd || !bwd)
-		goto out;
-
 	/* Initialize VN LLRs from channel */
 	for (i = 0; i < n; i++)
 		vn_llr[i] = llr[i];
+
+	/* Zero edge messages */
+	memset(edge_msg, 0, dec->csr_num_edges * sizeof(double));
 
 	/*
 	 * Note: shortening (xs > 0) is handled at the system level.
@@ -364,7 +382,11 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 			}
 		}
 
-		/* Check convergence */
+		/* Check convergence periodically (O(edges) cost) */
+		if ((iter + 1) % CONV_CHECK_PERIOD != 0 &&
+		    iter + 1 < dec->max_iter)
+			continue;
+
 		converged = 1;
 		for (i = 0; i < m; i++) {
 			unsigned int row_start = row_ptr[i];
@@ -396,12 +418,6 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	for (i = 0; i < k; i++)
 		output[i] = (vn_llr[i] < 0) ? 1 : 0;
 
-out:
-	free(vn_llr);
-	free(edge_msg);
-	free(v2c);
-	free(fwd);
-	free(bwd);
 	return ret;
 }
 
