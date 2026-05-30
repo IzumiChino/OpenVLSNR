@@ -4,8 +4,13 @@
 *.so
 
 # Test binaries
-test/test_modulator
+test/test_api_loopback
+test/test_ber
+test/test_ber_vlsnr
+test/test_e2e
 test/test_loopback
+test/test_modulator
+test/test_rf_ber
 
 # Editor
 *.swp

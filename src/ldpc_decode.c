@@ -25,6 +25,41 @@
 #define LLR_CLAMP	40.0
 
 /*
+ * Lookup table for f(x) = log1p(exp(-x)), x >= 0.
+ * 512 entries covering [0, LLR_CLAMP] with linear interpolation.
+ */
+#define BOXPLUS_LUT_SIZE	512
+static double boxplus_lut[BOXPLUS_LUT_SIZE + 1];
+static int boxplus_lut_init;
+
+static void init_boxplus_lut(void)
+{
+	unsigned int i;
+	double step = LLR_CLAMP / (double)BOXPLUS_LUT_SIZE;
+
+	for (i = 0; i <= BOXPLUS_LUT_SIZE; i++)
+		boxplus_lut[i] = log1p(exp(-(double)i * step));
+	boxplus_lut_init = 1;
+}
+
+static inline double lut_log1pexp(double x)
+{
+	double idx_f, f;
+	unsigned int idx;
+
+	if (x >= LLR_CLAMP)
+		return 0.0;
+	if (x <= 0.0)
+		return log(2.0);
+
+	idx_f = x * ((double)BOXPLUS_LUT_SIZE / LLR_CLAMP);
+	idx = (unsigned int)idx_f;
+	f = idx_f - (double)idx;
+	return boxplus_lut[idx] +
+		f * (boxplus_lut[idx + 1] - boxplus_lut[idx]);
+}
+
+/*
  * Exact check-node update in the LLR domain (the "box-plus" operator):
  *
  *   a [+] b = sign(a) sign(b) min(|a|,|b|)
@@ -32,7 +67,7 @@
  *
  * This is the sum-product (belief-propagation) check rule.  Compared to
  * min-sum it recovers the ~0.5-1 dB that matters at VL-SNR operating
- * points.  log1p(exp(-x)) is numerically stable for all x >= 0.
+ * points.  The correction term uses a precomputed LUT for speed.
  */
 static inline double boxplus(double a, double b)
 {
@@ -51,7 +86,7 @@ static inline double boxplus(double a, double b)
 	aa = fabs(a);
 	ab = fabs(b);
 	mn = (aa < ab) ? aa : ab;
-	corr = log1p(exp(-fabs(a + b))) - log1p(exp(-fabs(a - b)));
+	corr = lut_log1pexp(fabs(a + b)) - lut_log1pexp(fabs(a - b));
 
 	return sgn * mn + corr;
 }
@@ -182,18 +217,14 @@ static int build_csr(const struct dvbs2x_ldpc_code *code,
 	return 0;
 }
 
-static void free_csr(struct ldpc_csr *csr)
-{
-	free(csr->row_ptr);
-	free(csr->col_idx);
-}
-
 int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 			     const struct dvbs2x_modcod *modcod,
 			     unsigned int max_iter)
 {
 	unsigned int num_groups;
 	const struct dvbs2x_ldpc_table_entry *table;
+	struct ldpc_csr csr;
+	unsigned int i, m;
 
 	table = dvbs2x_ldpc_get_table(modcod, &num_groups);
 	if (!table)
@@ -209,7 +240,33 @@ int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 	dec->p_period = modcod->p_period;
 	dec->xs = modcod->xs;
 
+	/* Build and cache the CSR parity-check matrix */
+	if (build_csr(&dec->code, &csr) < 0)
+		return -1;
+
+	dec->csr_row_ptr = csr.row_ptr;
+	dec->csr_col_idx = csr.col_idx;
+	dec->csr_num_edges = csr.num_edges;
+
+	/* Find maximum check-node degree */
+	m = dec->code.n - dec->code.k;
+	dec->csr_max_deg = 0;
+	for (i = 0; i < m; i++) {
+		unsigned int deg = csr.row_ptr[i + 1] - csr.row_ptr[i];
+
+		if (deg > dec->csr_max_deg)
+			dec->csr_max_deg = deg;
+	}
+
 	return 0;
+}
+
+void dvbs2x_ldpc_decoder_free(struct dvbs2x_ldpc_decoder *dec)
+{
+	free(dec->csr_row_ptr);
+	free(dec->csr_col_idx);
+	dec->csr_row_ptr = NULL;
+	dec->csr_col_idx = NULL;
 }
 
 int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
@@ -218,40 +275,29 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 {
 	unsigned int n = dec->code.n;
 	unsigned int k = dec->code.k;
-	unsigned int m = n - k;		/* transmitted parity bits */
-	struct ldpc_csr csr;
-	double *vn_llr;		/* total VN belief */
-	double *edge_msg;	/* CN-to-VN messages (one per edge) */
-	double *v2c = NULL;	/* per-row VN->CN messages */
-	double *fwd = NULL;	/* forward box-plus accumulation */
-	double *bwd = NULL;	/* backward box-plus accumulation */
-	unsigned int max_deg = 0;
+	unsigned int m = n - k;
+	const unsigned int *row_ptr = dec->csr_row_ptr;
+	const unsigned int *col_idx = dec->csr_col_idx;
+	unsigned int max_deg = dec->csr_max_deg;
+	double *vn_llr;
+	double *edge_msg;
+	double *v2c = NULL;
+	double *fwd = NULL;
+	double *bwd = NULL;
 	unsigned int iter;
 	unsigned int i, j;
 	int ret = -1;
 	int converged = 0;
 
-	/*
-	 * Build H matrix in CSR format.
-	 * Use the transmitted code dimensions (k info + m parity).
-	 * The staircase parity structure handles the accumulator.
-	 * Puncturing is handled by the encoder producing the correct
-	 * codeword for the transmitted (post-puncture) code.
-	 */
-	if (build_csr(&dec->code, &csr) < 0)
+	if (!row_ptr || !col_idx)
 		return -1;
 
-	/* Largest check-node degree (sizes the per-row scratch buffers) */
-	for (i = 0; i < m; i++) {
-		unsigned int deg = csr.row_ptr[i + 1] - csr.row_ptr[i];
-
-		if (deg > max_deg)
-			max_deg = deg;
-	}
+	if (!boxplus_lut_init)
+		init_boxplus_lut();
 
 	/* Allocate working memory */
 	vn_llr = malloc(n * sizeof(double));
-	edge_msg = calloc(csr.num_edges, sizeof(double));
+	edge_msg = calloc(dec->csr_num_edges, sizeof(double));
 	v2c = malloc((max_deg + 1) * sizeof(double));
 	fwd = malloc((max_deg + 1) * sizeof(double));
 	bwd = malloc((max_deg + 1) * sizeof(double));
@@ -275,8 +321,8 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 
 		/* For each check node (row of H): layered sum-product */
 		for (i = 0; i < m; i++) {
-			unsigned int row_start = csr.row_ptr[i];
-			unsigned int row_end = csr.row_ptr[i + 1];
+			unsigned int row_start = row_ptr[i];
+			unsigned int row_end = row_ptr[i + 1];
 			unsigned int degree = row_end - row_start;
 			unsigned int d;
 
@@ -285,7 +331,7 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 
 			/* Gather extrinsic VN->CN messages for this row */
 			for (d = 0; d < degree; d++) {
-				unsigned int vn = csr.col_idx[row_start + d];
+				unsigned int vn = col_idx[row_start + d];
 
 				v2c[d] = vn_llr[vn] - edge_msg[row_start + d];
 			}
@@ -300,7 +346,7 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 
 			/* Extrinsic CN->VN message excludes the target edge */
 			for (d = 0; d < degree; d++) {
-				unsigned int vn = csr.col_idx[row_start + d];
+				unsigned int vn = col_idx[row_start + d];
 				double new_msg;
 
 				if (degree == 1)
@@ -321,12 +367,12 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 		/* Check convergence */
 		converged = 1;
 		for (i = 0; i < m; i++) {
-			unsigned int row_start = csr.row_ptr[i];
-			unsigned int row_end = csr.row_ptr[i + 1];
+			unsigned int row_start = row_ptr[i];
+			unsigned int row_end = row_ptr[i + 1];
 			int parity = 0;
 
 			for (j = row_start; j < row_end; j++) {
-				if (vn_llr[csr.col_idx[j]] < 0)
+				if (vn_llr[col_idx[j]] < 0)
 					parity ^= 1;
 			}
 			if (parity) {
@@ -356,7 +402,6 @@ out:
 	free(v2c);
 	free(fwd);
 	free(bwd);
-	free_csr(&csr);
 	return ret;
 }
 

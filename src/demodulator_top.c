@@ -479,9 +479,14 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	dvbs2x_deinterleave(mc, llr, deint);
 
 	/* LDPC decode */
-	if (dvbs2x_ldpc_decoder_init(&demod->ldpc_dec, mc,
-				     DVBS2X_LDPC_MAX_ITER) < 0)
-		goto out;
+	if (!demod->ldpc_dec.csr_row_ptr ||
+	    demod->ldpc_dec.code.n != mc->fec_len ||
+	    demod->ldpc_dec.code.k != mc->k_ldpc) {
+		dvbs2x_ldpc_decoder_free(&demod->ldpc_dec);
+		if (dvbs2x_ldpc_decoder_init(&demod->ldpc_dec, mc,
+					     DVBS2X_LDPC_MAX_ITER) < 0)
+			goto out;
+	}
 	ldpc_out = malloc(mc->k_ldpc);
 	if (!ldpc_out)
 		goto out;

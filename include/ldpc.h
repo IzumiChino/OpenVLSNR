@@ -53,6 +53,11 @@ struct dvbs2x_ldpc_decoder {
 	unsigned int		xp;		/* punctured parity bits */
 	unsigned int		p_period;	/* puncturing period */
 	unsigned int		xs;		/* shortened info bits */
+	/* Cached CSR parity-check matrix (built once at init) */
+	unsigned int		*csr_row_ptr;
+	unsigned int		*csr_col_idx;
+	unsigned int		csr_num_edges;
+	unsigned int		csr_max_deg;
 };
 
 /*
@@ -87,6 +92,12 @@ int dvbs2x_ldpc_encode(const struct dvbs2x_ldpc_encoder *enc,
 int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 			     const struct dvbs2x_modcod *modcod,
 			     unsigned int max_iter);
+
+/*
+ * dvbs2x_ldpc_decoder_free - Release decoder resources
+ * @dec: decoder context previously initialized with _init
+ */
+void dvbs2x_ldpc_decoder_free(struct dvbs2x_ldpc_decoder *dec);
 
 /*
  * dvbs2x_ldpc_decode - Decode LLR values

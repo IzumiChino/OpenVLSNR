@@ -147,15 +147,15 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 	if (!ref_init) {
 		for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
 			const struct dvbs2x_modcod *modcod;
-			int8_t chips[DVBS2X_VLSNR_WH_LEN];
+			int8_t c[DVBS2X_VLSNR_WH_LEN];
 
 			modcod = dvbs2x_vlsnr_get_modcod(mc + 1);
 			if (!modcod) {
 				memset(ref[mc], 0, sizeof(ref[mc]));
 				continue;
 			}
-			vlsnr_chip_sequence(modcod_to_wh_row(modcod), chips);
-			chips_to_symbols(chips, ref[mc]);
+			vlsnr_chip_sequence(modcod_to_wh_row(modcod), c);
+			chips_to_symbols(c, ref[mc]);
 		}
 		ref_init = 1;
 	}
@@ -166,15 +166,11 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 	/* Slide a correlation window over the input */
 	for (pos = 0; pos + DVBS2X_VLSNR_WH_LEN <= len; pos++) {
 		for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+			const struct dvbs2x_complex *rf = ref[mc];
 			double seg_mag = 0.0;
 			unsigned int seg_start;
 			double corr;
 
-			/*
-			 * Segment-coherent correlation: coherent sum within
-			 * each segment, magnitudes summed across segments to
-			 * tolerate residual frequency offset.
-			 */
 			for (seg_start = 0;
 			     seg_start < DVBS2X_VLSNR_WH_LEN;
 			     seg_start += seg_len) {
@@ -185,13 +181,11 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 					seg_end = DVBS2X_VLSNR_WH_LEN;
 
 				for (n = seg_start; n < seg_end; n++) {
-					const struct dvbs2x_complex *r =
-						&symbols[pos + n];
-					const struct dvbs2x_complex *rf =
-						&ref[mc][n];
+					double ri = symbols[pos + n].i;
+					double rq = symbols[pos + n].q;
 
-					si += r->i * rf->i + r->q * rf->q;
-					sq += r->q * rf->i - r->i * rf->q;
+					si += ri * rf[n].i + rq * rf[n].q;
+					sq += rq * rf[n].i - ri * rf[n].q;
 				}
 				seg_mag += sqrt(si * si + sq * sq);
 			}
