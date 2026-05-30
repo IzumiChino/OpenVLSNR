@@ -16,26 +16,26 @@
 void dvbs2x_interleave(const struct dvbs2x_modcod *modcod,
 		       const uint8_t *input, uint8_t *output)
 {
-	unsigned int n_ldpc;
+	unsigned int n;
 	unsigned int rows;
 	unsigned int cols;
 	unsigned int r, c;
 	unsigned int idx;
 
-	n_ldpc = modcod->fec_len;
+	n = dvbs2x_tx_coded_bits(modcod);
 
 	if (modcod->modulation == DVBS2X_MOD_BPSK) {
 		/* No interleaving for BPSK */
 		unsigned int i;
 
-		for (i = 0; i < n_ldpc; i++)
+		for (i = 0; i < n; i++)
 			output[i] = input[i];
 		return;
 	}
 
 	/* QPSK: 2 columns */
 	cols = 2;
-	rows = n_ldpc / cols;
+	rows = n / cols;
 
 	/*
 	 * Write column-wise, read row-wise:
@@ -53,25 +53,25 @@ void dvbs2x_interleave(const struct dvbs2x_modcod *modcod,
 void dvbs2x_deinterleave(const struct dvbs2x_modcod *modcod,
 			 const double *input, double *output)
 {
-	unsigned int n_ldpc;
+	unsigned int n;
 	unsigned int rows;
 	unsigned int cols;
 	unsigned int r, c;
 	unsigned int idx;
 
-	n_ldpc = modcod->fec_len;
+	n = dvbs2x_tx_coded_bits(modcod);
 
 	if (modcod->modulation == DVBS2X_MOD_BPSK) {
 		unsigned int i;
 
-		for (i = 0; i < n_ldpc; i++)
+		for (i = 0; i < n; i++)
 			output[i] = input[i];
 		return;
 	}
 
 	/* QPSK: 2 columns - inverse permutation */
 	cols = 2;
-	rows = n_ldpc / cols;
+	rows = n / cols;
 
 	/*
 	 * Inverse of interleave:

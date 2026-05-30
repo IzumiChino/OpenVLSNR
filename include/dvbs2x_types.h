@@ -93,6 +93,16 @@ struct dvbs2x_modcod {
 	unsigned int		nbch_eff;	/* effective BCH (k_ldpc-xs) */
 };
 
+/*
+ * Transmitted coded bits after shortening and puncturing.
+ * The LDPC codeword (fec_len bits) has xs info bits removed
+ * (shortened, known zero) and xp parity bits removed (punctured).
+ */
+static inline unsigned int dvbs2x_tx_coded_bits(const struct dvbs2x_modcod *mc)
+{
+	return mc->fec_len - mc->xs - mc->xp;
+}
+
 /* Modulator configuration */
 struct dvbs2x_mod_cfg {
 	const struct dvbs2x_modcod	*modcod;

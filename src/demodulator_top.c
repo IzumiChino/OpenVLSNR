@@ -75,14 +75,17 @@ static void frame_geometry(const struct dvbs2x_modcod *mc,
 			   unsigned int *num_tx_sym,
 			   unsigned int *data_field_len)
 {
+	unsigned int tx_coded;
 	unsigned int mod_sym;
 	unsigned int tx_sym;
 	unsigned int blks;
 
+	tx_coded = dvbs2x_tx_coded_bits(mc);
+
 	if (mc->modulation == DVBS2X_MOD_QPSK)
-		mod_sym = mc->fec_len / 2;
+		mod_sym = tx_coded / 2;
 	else
-		mod_sym = mc->fec_len;
+		mod_sym = tx_coded;
 
 	tx_sym = mc->has_spread ? mod_sym * 2 : mod_sym;
 	blks = (tx_sym - 1) / DVBS2X_PILOT_INTERVAL;
@@ -465,18 +468,72 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	if (mc->has_spread)
 		demap_nv *= 0.5;	/* despread halves the noise */
 
-	llr = malloc(mc->fec_len * sizeof(double));
-	deint = malloc(mc->fec_len * sizeof(double));
-	if (!llr || !deint)
-		goto out;
+	{
+		unsigned int tx_coded = dvbs2x_tx_coded_bits(mc);
 
-	if (mc->modulation == DVBS2X_MOD_QPSK)
-		dvbs2x_demod_qpsk(despread, llr, num_mod_sym, demap_nv);
-	else
-		dvbs2x_demod_pi2bpsk(despread, llr, num_mod_sym, demap_nv);
+		llr = malloc(tx_coded * sizeof(double));
+		deint = malloc(mc->fec_len * sizeof(double));
+		if (!llr || !deint)
+			goto out;
 
-	/* Deinterleave */
-	dvbs2x_deinterleave(mc, llr, deint);
+		if (mc->modulation == DVBS2X_MOD_QPSK)
+			dvbs2x_demod_qpsk(despread, llr,
+					  num_mod_sym, demap_nv);
+		else
+			dvbs2x_demod_pi2bpsk(despread, llr,
+					     num_mod_sym, demap_nv);
+
+		/* Deinterleave (operates on tx_coded bits) */
+		dvbs2x_deinterleave(mc, llr, deint);
+
+		/*
+		 * Depuncture and deshorten: expand tx_coded LLRs
+		 * back to the full fec_len LDPC codeword.
+		 *
+		 * deint[0 .. k_ldpc-xs-1] = info LLRs
+		 * deint[k_ldpc-xs .. tx_coded-1] = unpunctured parity
+		 *
+		 * Rebuild full_llr[0..fec_len-1]:
+		 *   [0..xs-1] = +LLR_CLAMP (shortened, known zero)
+		 *   [xs..k_ldpc-1] = info LLRs from deint
+		 *   [k_ldpc..fec_len-1] = parity with 0.0 at
+		 *                         punctured positions
+		 */
+		{
+			double *full_llr;
+			unsigned int i, p_idx, d_idx;
+
+			full_llr = malloc(mc->fec_len * sizeof(double));
+			if (!full_llr)
+				goto out;
+
+			/* Shortened positions: known zero */
+			for (i = 0; i < mc->xs; i++)
+				full_llr[i] = 40.0;
+
+			/* Info LLRs */
+			for (i = mc->xs; i < mc->k_ldpc; i++)
+				full_llr[i] = deint[i - mc->xs];
+
+			/* Parity: insert erasures at punctured pos */
+			d_idx = mc->k_ldpc - mc->xs;
+			p_idx = 0;
+			for (i = 0; i < mc->fec_len - mc->k_ldpc; i++) {
+				if (mc->xp > 0 && p_idx < mc->xp &&
+				    i == p_idx * mc->p_period) {
+					full_llr[mc->k_ldpc + i] = 0.0;
+					p_idx++;
+				} else {
+					full_llr[mc->k_ldpc + i] =
+						deint[d_idx++];
+				}
+			}
+
+			/* Replace deint with full_llr for LDPC */
+			free(deint);
+			deint = full_llr;
+		}
+	}
 
 	/* LDPC decode */
 	if (!demod->ldpc_dec.csr_row_ptr ||
@@ -492,7 +549,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 		goto out;
 	dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out, &iter_used);
 
-	/* BCH decode */
+	/*
+	 * BCH decode: the LDPC info word includes the xs zero prefix.
+	 * The full k_ldpc = n_bch bits form the BCH codeword.
+	 */
 	if (dvbs2x_bch_decoder_init(&demod->bch_dec, mc) < 0)
 		goto out;
 	bch_cw = malloc(mc->n_bch);

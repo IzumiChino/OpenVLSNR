@@ -24,7 +24,8 @@
 
 /* BB frame context */
 struct dvbs2x_bb_frame_ctx {
-	unsigned int	k_bch;		/* data field capacity (bits) */
+	unsigned int	k_bch;		/* total BCH input capacity (bits) */
+	unsigned int	xs;		/* shortening zero-prefix length */
 	unsigned int	stream_type;
 	uint16_t	upl;		/* user packet length */
 	uint16_t	dfl;		/* data field length */

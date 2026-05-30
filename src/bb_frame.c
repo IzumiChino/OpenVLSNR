@@ -25,14 +25,15 @@ void dvbs2x_bb_frame_init(struct dvbs2x_bb_frame_ctx *ctx,
 			  unsigned int stream_type)
 {
 	ctx->k_bch = modcod->k_bch;
+	ctx->xs = modcod->xs;
 	ctx->stream_type = stream_type;
 
 	if (stream_type == DVBS2X_STREAM_TS) {
 		ctx->upl = 188 * 8;	/* TS packet = 188 bytes */
-		ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
+		ctx->dfl = ctx->k_bch - ctx->xs - BB_HEADER_BITS;
 	} else {
 		ctx->upl = 0;
-		ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
+		ctx->dfl = ctx->k_bch - ctx->xs - BB_HEADER_BITS;
 	}
 }
 
@@ -85,6 +86,10 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	if (user_len > dfl)
 		user_len = dfl;
 
+	/* Zero prefix for LDPC shortening */
+	if (ctx->xs > 0)
+		memset(bbframe, 0, ctx->xs);
+
 	/* Build MATYPE-1 */
 	if (ctx->stream_type == DVBS2X_STREAM_TS)
 		matype1 = 0xF0;	/* TS, SIS, CCM, ISSYI=0, NPD=0 */
@@ -103,14 +108,13 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	header_bytes[8] = 0x00;		/* SYNCD low */
 	header_bytes[9] = dvbs2x_bb_crc8(header_bytes, 9);
 
-	/* Convert header to bits */
-	bit_idx = 0;
+	/* Convert header to bits (placed after xs zero prefix) */
+	bit_idx = ctx->xs;
 	for (i = 0; i < DVBS2X_BB_HEADER_LEN; i++) {
 		unsigned int b;
 
-		for (b = 0; b < 8; b++) {
+		for (b = 0; b < 8; b++)
 			bbframe[bit_idx++] = (header_bytes[i] >> (7 - b)) & 1;
-		}
 	}
 
 	/* Copy user data */
@@ -143,13 +147,15 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 		descrambled[i] = bbframe[i];
 	bb_scramble(descrambled, ctx->k_bch);
 
-	/* Extract header bytes from bits */
+	/* Extract header bytes from bits (after xs zero prefix) */
+	bit_idx = ctx->xs;
 	for (i = 0; i < DVBS2X_BB_HEADER_LEN; i++) {
 		unsigned int b;
 
 		header_bytes[i] = 0;
 		for (b = 0; b < 8; b++)
-			header_bytes[i] |= descrambled[i * 8 + b] << (7 - b);
+			header_bytes[i] |=
+				descrambled[bit_idx + i * 8 + b] << (7 - b);
 	}
 
 	/* Verify CRC-8 */
@@ -159,11 +165,11 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 
 	/* Extract DFL */
 	dfl = ((uint16_t)header_bytes[4] << 8) | header_bytes[5];
-	if (dfl > ctx->k_bch - BB_HEADER_BITS)
-		dfl = ctx->k_bch - BB_HEADER_BITS;
+	if (dfl > ctx->k_bch - ctx->xs - BB_HEADER_BITS)
+		dfl = ctx->k_bch - ctx->xs - BB_HEADER_BITS;
 
 	/* Extract user data */
-	bit_idx = BB_HEADER_BITS;
+	bit_idx = ctx->xs + BB_HEADER_BITS;
 	for (i = 0; i < dfl; i++)
 		user_data[i] = descrambled[bit_idx + i];
 

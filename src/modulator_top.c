@@ -81,40 +81,76 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	const struct dvbs2x_modcod *mc = mod->cfg.modcod;
 	uint8_t *bbframe = NULL;
 	uint8_t *bch_out = NULL;
-	uint8_t *ldpc_out = NULL;
+	uint8_t *ldpc_cw = NULL;
+	uint8_t *tx_bits = NULL;
 	uint8_t *interleaved = NULL;
 	struct dvbs2x_complex *data_sym = NULL;
 	struct dvbs2x_complex *tx_sym = NULL;
-	unsigned int num_mod_sym;	/* modulated symbols (pre-spread) */
-	unsigned int num_tx_sym;	/* after spreading */
+	unsigned int tx_coded;		/* bits after shorten + puncture */
+	unsigned int num_mod_sym;
+	unsigned int num_tx_sym;
 	unsigned int hdr_len;
 	unsigned int pilot_len;
+	unsigned int i, p_idx, t_idx;
 	int ret = -1;
 
 	hdr_len = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN;
+	tx_coded = dvbs2x_tx_coded_bits(mc);
 
 	bbframe = malloc(mc->k_bch);
 	bch_out = malloc(mc->n_bch);
-	ldpc_out = malloc(mc->fec_len);
-	interleaved = malloc(mc->fec_len);
-	if (!bbframe || !bch_out || !ldpc_out || !interleaved)
+	ldpc_cw = malloc(mc->fec_len);
+	tx_bits = malloc(tx_coded);
+	interleaved = malloc(tx_coded);
+	if (!bbframe || !bch_out || !ldpc_cw || !tx_bits || !interleaved)
 		goto out;
 
-	/* FEC + interleave */
+	/* BB frame -> BCH -> LDPC */
 	if (dvbs2x_bb_frame_build(&mod->bb_ctx, user_data, user_len,
 				  bbframe) < 0)
 		goto out;
 	if (dvbs2x_bch_encode(&mod->bch_enc, bbframe, bch_out) < 0)
 		goto out;
-	if (dvbs2x_ldpc_encode(&mod->ldpc_enc, bch_out, ldpc_out) < 0)
+
+	/*
+	 * LDPC encode.  The BB frame has xs zero bits prepended
+	 * (shortening), so the BCH codeword's first xs positions
+	 * are zero — matching the LDPC shortening requirement.
+	 */
+	if (dvbs2x_ldpc_encode(&mod->ldpc_enc, bch_out, ldpc_cw) < 0)
 		goto out;
-	dvbs2x_interleave(mc, ldpc_out, interleaved);
+
+	/*
+	 * Apply shortening and puncturing to produce tx_bits:
+	 * - Skip first xs info bits (shortened, known zero)
+	 * - Copy remaining info bits: ldpc_cw[xs .. k_ldpc-1]
+	 * - Copy parity bits, skipping punctured positions
+	 */
+	t_idx = 0;
+
+	/* Info bits (skip shortened prefix) */
+	for (i = mc->xs; i < mc->k_ldpc; i++)
+		tx_bits[t_idx++] = ldpc_cw[i];
+
+	/* Parity bits (skip punctured positions) */
+	p_idx = 0;
+	for (i = 0; i < mc->fec_len - mc->k_ldpc; i++) {
+		if (mc->xp > 0 && p_idx < mc->xp &&
+		    i == p_idx * mc->p_period) {
+			p_idx++;
+			continue;	/* punctured */
+		}
+		tx_bits[t_idx++] = ldpc_cw[mc->k_ldpc + i];
+	}
+
+	/* Interleave the transmitted bits */
+	dvbs2x_interleave(mc, tx_bits, interleaved);
 
 	/* Constellation mapping */
 	if (mc->modulation == DVBS2X_MOD_QPSK)
-		num_mod_sym = mc->fec_len / 2;
+		num_mod_sym = tx_coded / 2;
 	else
-		num_mod_sym = mc->fec_len;
+		num_mod_sym = tx_coded;
 
 	data_sym = malloc(num_mod_sym * sizeof(struct dvbs2x_complex));
 	if (!data_sym)
@@ -128,7 +164,8 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	/* Spreading */
 	if (mc->has_spread) {
 		num_tx_sym = num_mod_sym * 2;
-		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
+		tx_sym = malloc(num_tx_sym *
+				sizeof(struct dvbs2x_complex));
 		if (!tx_sym)
 			goto out;
 		dvbs2x_mod_spread(data_sym, tx_sym, num_mod_sym);
@@ -156,7 +193,8 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 out:
 	free(bbframe);
 	free(bch_out);
-	free(ldpc_out);
+	free(ldpc_cw);
+	free(tx_bits);
 	free(interleaved);
 	free(data_sym);
 	free(tx_sym);
@@ -177,14 +215,13 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 	int ret = -1;
 
 	/*
-	 * Worst-case frame size: header + all FEC symbols (with spread,
-	 * up to 2*fec_len) + one 36-symbol pilot block per 1440 data
-	 * symbols, plus slack.
+	 * Worst-case frame size: header + all transmitted symbols
+	 * (with spread, up to 2*tx_coded) + pilot blocks + slack.
 	 */
 	frame_cap = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN +
-		    mc->fec_len * 2 +
-		    (mc->fec_len * 2 / DVBS2X_PILOT_INTERVAL + 1) *
-		    DVBS2X_PILOT_BLK_LEN + 64;
+		    dvbs2x_tx_coded_bits(mc) * 2 +
+		    (dvbs2x_tx_coded_bits(mc) * 2 / DVBS2X_PILOT_INTERVAL
+		     + 1) * DVBS2X_PILOT_BLK_LEN + 64;
 
 	frame = malloc(frame_cap * sizeof(struct dvbs2x_complex));
 	if (!frame)

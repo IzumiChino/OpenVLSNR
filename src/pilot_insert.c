@@ -19,14 +19,17 @@
 int dvbs2x_pilot_get_params(const struct dvbs2x_modcod *modcod,
 			    struct dvbs2x_pilot_params *params)
 {
+	unsigned int tx_coded;
 	unsigned int data_symbols;
 	unsigned int num_reg_pilots;
 
+	tx_coded = dvbs2x_tx_coded_bits(modcod);
+
 	/* Calculate data symbols based on frame type and modulation */
 	if (modcod->modulation == DVBS2X_MOD_QPSK)
-		data_symbols = modcod->fec_len / 2;
+		data_symbols = tx_coded / 2;
 	else
-		data_symbols = modcod->fec_len;
+		data_symbols = tx_coded;
 
 	/* Apply spreading if needed */
 	if (modcod->has_spread)
