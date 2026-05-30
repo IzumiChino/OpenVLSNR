@@ -21,10 +21,9 @@
 #define DVBS2X_PLSC_LEN		64
 #define DVBS2X_PLHEADER_LEN	90
 
-/* VL-SNR Header */
+/* VL-SNR Header (896-symbol Walsh-Hadamard sequence) */
 #define DVBS2X_VLSNR_WH_LEN	896
-#define DVBS2X_VLSNR_PAD_LEN	2
-#define DVBS2X_VLSNR_HDR_LEN	(DVBS2X_VLSNR_WH_LEN + DVBS2X_VLSNR_PAD_LEN)
+#define DVBS2X_VLSNR_HDR_LEN	DVBS2X_VLSNR_WH_LEN
 
 /* VL-SNR frame symbol lengths */
 #define DVBS2X_VLSNR_FRAME_LONG		33282
@@ -91,7 +90,7 @@ struct dvbs2x_modcod {
 	unsigned int		xs;		/* shortening: zero-prepend */
 	unsigned int		xp;		/* puncturing: removed parity */
 	unsigned int		p_period;	/* puncturing period */
-	unsigned int		nbch_eff;	/* effective BCH bits (k_ldpc - xs) */
+	unsigned int		nbch_eff;	/* effective BCH (k_ldpc-xs) */
 };
 
 /* Modulator configuration */

@@ -24,7 +24,8 @@
  * k_ldpc = n_bch (BCH output feeds LDPC input)
  * n_bch = k_bch + bch_parity_bits
  */
-static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] = {
+static const struct dvbs2x_modcod
+vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] = {
 	/* Index 1: QPSK 2/9, normal frame */
 	{
 		.index		= 1,
@@ -124,7 +125,7 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.n_bch		= 3240,
 		.bch_t		= 12,
 		.k_ldpc		= 3240,
-		.q_ldpc		= 135,
+		.q_ldpc		= 36,
 		.xs		= 560,
 		.xp		= 250,
 		.p_period	= 30,
@@ -166,7 +167,7 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.n_bch		= 3240,
 		.bch_t		= 12,
 		.k_ldpc		= 3240,
-		.q_ldpc		= 135,
+		.q_ldpc		= 36,
 		.xs		= 0,
 		.xp		= 1224,
 		.p_period	= 10,
@@ -208,7 +209,7 @@ static const struct dvbs2x_modcod vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] =
 		.n_bch		= 5400,
 		.bch_t		= 12,
 		.k_ldpc		= 5400,
-		.q_ldpc		= 120,
+		.q_ldpc		= 30,
 		.xs		= 0,
 		.xp		= 1224,
 		.p_period	= 8,

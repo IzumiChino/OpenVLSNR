@@ -6,7 +6,9 @@
  * that conveys the MODCOD information and enables frame synchronization
  * at very low SNR (down to -10 dB Es/N0).
  *
- * Structure: [2 zero-padding symbols] [896 WH symbols]
+ * Structure: 896 pi/2-BPSK Walsh-Hadamard symbols.  The rotation
+ * index matches the receiver reference so the header doubles as a
+ * data-aided carrier-recovery preamble.
  *
  * Reference: ETSI EN 302 307-2 clause 5.5.2.5
  */
@@ -24,8 +26,7 @@
  * @modcod: MODCOD parameters (determines WH sequence selection)
  * @symbols: output array (DVBS2X_VLSNR_HDR_LEN symbols)
  *
- * Generates 2 zero-padding symbols followed by 896 WH symbols,
- * pi/2-BPSK modulated.
+ * Generates 896 PN-covered Walsh-Hadamard symbols, pi/2-BPSK modulated.
  */
 void dvbs2x_vlsnr_header_generate(const struct dvbs2x_modcod *modcod,
 				  struct dvbs2x_complex *symbols);

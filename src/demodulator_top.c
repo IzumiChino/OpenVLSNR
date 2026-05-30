@@ -2,57 +2,344 @@
 /*
  * DVB-S2X VL-SNR Top-Level Demodulator
  *
- * Integrates the complete receiver pipeline:
- *   Baseband IQ -> RRC matched filter -> timing recovery ->
- *   coarse freq -> frame sync -> fine freq -> phase est ->
- *   descramble -> pilot extract -> [despread] -> soft demap ->
- *   deinterleave -> LDPC decode -> BCH decode -> BB frame parse
+ * Two layers are provided:
+ *
+ *   dvbs2x_demodulate_symbols() - symbol-rate receiver core
+ *       frame sync -> WH-aided carrier recovery -> descramble ->
+ *       pilot-aided phase tracking -> pilot extract -> [despread] ->
+ *       soft demap -> deinterleave -> LDPC decode -> BCH decode ->
+ *       BB frame parse
+ *
+ *   dvbs2x_demodulate() - wraps the symbol core with the RF front-end
+ *       (RRC matched filter + symbol timing recovery).
+ *
+ * Carrier recovery exploits the known 896-symbol Walsh-Hadamard
+ * header and the periodic pilot blocks:
+ *
+ *   - When the frame-sync correlation is strong (higher SNR) a
+ *     coarse L&R frequency estimate from the header removes large
+ *     carrier offsets.
+ *   - A weighted, unwrapped linear fit of the phase measured on the
+ *     header and every pilot block then tracks the residual carrier
+ *     (small frequency drift + phase) across the whole frame.  The
+ *     header (896 symbols) anchors the phase and the pilots, spread
+ *     over the frame, give the long baseline needed for an accurate
+ *     residual-frequency slope.  This is what lets the data field be
+ *     coherently demapped down to very low Es/N0.
  */
 
 #include "dvbs2x_vlsnr.h"
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
-/* Declared in demodulate.c */
-extern void dvbs2x_demod_pi2bpsk(const struct dvbs2x_complex *symbols,
-				 double *llr, unsigned int len,
-				 double noise_var);
-extern void dvbs2x_demod_qpsk(const struct dvbs2x_complex *symbols,
-			      double *llr, unsigned int num_symbols,
-			      double noise_var);
-extern void dvbs2x_demod_despread(const struct dvbs2x_complex *in,
-				  struct dvbs2x_complex *out,
-				  unsigned int out_len);
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+#define M_SQRT1_2_D	0.70710678118654752440
+
+/*
+ * L&R coarse-frequency lags, and the minimum estimated Es/N0 (dB) at
+ * which the header-only coarse frequency estimate is trustworthy.
+ * Below this the receiver assumes a small residual offset (as after
+ * acquisition) and relies on pilot-aided residual tracking, which is
+ * what allows operation at very low Es/N0.
+ */
+#define LR_LAGS		128
+#define COARSE_MIN_ESN0	4.0
+
+/*
+ * Frame-sync correlation segment length.  The 896-symbol header is
+ * correlated as coherent segments of this length whose magnitudes are
+ * summed, which tolerates a residual carrier offset up to about
+ * 0.25/SYNC_SEG_LEN cycles/symbol during acquisition while keeping
+ * enough per-segment gain to discriminate the MODCOD at low SNR.
+ */
+#define SYNC_SEG_LEN	128
+
+/*
+ * Frame-acquisition search window (symbols).  The demodulator expects
+ * the frame to start within this many symbols of the buffer start, as
+ * a receiver would after coarse burst detection.  Bounding the search
+ * keeps acquisition cost independent of the buffer length.
+ */
+#define ACQ_WINDOW	4096
+
+/*
+ * Number of pilot-bearing data symbols (after spreading) and the
+ * resulting data-field length including 36-symbol pilot blocks.
+ */
+static void frame_geometry(const struct dvbs2x_modcod *mc,
+			   unsigned int *num_tx_sym,
+			   unsigned int *data_field_len)
+{
+	unsigned int mod_sym;
+	unsigned int tx_sym;
+	unsigned int blks;
+
+	if (mc->modulation == DVBS2X_MOD_QPSK)
+		mod_sym = mc->fec_len / 2;
+	else
+		mod_sym = mc->fec_len;
+
+	tx_sym = mc->has_spread ? mod_sym * 2 : mod_sym;
+	blks = (tx_sym - 1) / DVBS2X_PILOT_INTERVAL;
+
+	*num_tx_sym = tx_sym;
+	*data_field_len = tx_sym + blks * DVBS2X_PILOT_BLK_LEN;
+}
+
+/* Rotate symbols [base, base+span) by exp(-j(2*pi*f*n + phi)), n from 0. */
+static void derotate(struct dvbs2x_complex *sym, unsigned int base,
+		     unsigned int span, double f, double phi)
+{
+	unsigned int n;
+
+	for (n = 0; n < span; n++) {
+		struct dvbs2x_complex *r = &sym[base + n];
+		double a = 2.0 * M_PI * f * (double)n + phi;
+		double c = cos(a), s = sin(a);
+		double ti = r->i * c + r->q * s;
+		double tq = r->q * c - r->i * s;
+
+		r->i = ti;
+		r->q = tq;
+	}
+}
+
+/*
+ * L&R frequency estimate (cycles/symbol) of z[0..N-1].
+ * Estimation range is +/- 1/(LR_LAGS+1); apply a coarse single-lag
+ * pre-estimate first to widen the capture range.
+ */
+static double lr_freq(const struct dvbs2x_complex *z, unsigned int n)
+{
+	double si = 0.0, sq = 0.0;
+	unsigned int m, k;
+
+	for (m = 1; m <= LR_LAGS && m < n; m++) {
+		double ri = 0.0, rq = 0.0;
+
+		for (k = m; k < n; k++) {
+			ri += z[k].i * z[k - m].i + z[k].q * z[k - m].q;
+			rq += z[k].q * z[k - m].i - z[k].i * z[k - m].q;
+		}
+		si += ri / (double)(n - m);
+		sq += rq / (double)(n - m);
+	}
+	return atan2(sq, si) / (M_PI * (double)(LR_LAGS + 1));
+}
+
+/*
+ * Estimate the per-component noise variance from the WH header using
+ * second differences of z[n] = r * conj(ref).  The second difference
+ * cancels a constant carrier-frequency ramp, so the estimate is robust
+ * to a residual offset.  E|z[n]-2z[n-1]+z[n-2]|^2 = 12*sigma^2.
+ */
+static double estimate_noise_var(const struct dvbs2x_complex *sym,
+				 unsigned int wh_start,
+				 const struct dvbs2x_complex *wh_ref)
+{
+	double acc = 0.0;
+	unsigned int n, cnt = 0;
+	struct dvbs2x_complex z0, z1, z2;
+
+	for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++) {
+		const struct dvbs2x_complex *r = &sym[wh_start + n];
+
+		z2.i = r->i * wh_ref[n].i + r->q * wh_ref[n].q;
+		z2.q = r->q * wh_ref[n].i - r->i * wh_ref[n].q;
+		if (n >= 2) {
+			double di = z2.i - 2.0 * z1.i + z0.i;
+			double dq = z2.q - 2.0 * z1.q + z0.q;
+
+			acc += di * di + dq * dq;
+			cnt++;
+		}
+		z0 = z1;
+		z1 = z2;
+	}
+	if (cnt == 0)
+		return 1.0;
+	return acc / (double)cnt / 12.0;
+}
+
+/*
+ * Coarse carrier-frequency recovery from the WH header.  Only applied
+ * when the estimated Es/N0 is high enough to trust a header-only
+ * estimate (large offsets are otherwise left to acquisition at higher
+ * SNR; small residual offsets are handled by residual tracking).
+ */
+static void coarse_freq_recover(struct dvbs2x_complex *sym,
+				unsigned int wh_start, unsigned int span,
+				const struct dvbs2x_complex *wh_ref,
+				double esn0_db)
+{
+	struct dvbs2x_complex *z;
+	double f1, f2;
+	double ri = 0.0, rq = 0.0;
+	unsigned int n;
+
+	if (esn0_db < COARSE_MIN_ESN0)
+		return;
+
+	z = malloc(DVBS2X_VLSNR_WH_LEN * sizeof(*z));
+	if (!z)
+		return;
+
+	/* z[n] = r * conj(ref) */
+	for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++) {
+		const struct dvbs2x_complex *r = &sym[wh_start + n];
+
+		z[n].i = r->i * wh_ref[n].i + r->q * wh_ref[n].q;
+		z[n].q = r->q * wh_ref[n].i - r->i * wh_ref[n].q;
+	}
+
+	/* Single-lag coarse estimate (wide range) */
+	for (n = 1; n < DVBS2X_VLSNR_WH_LEN; n++) {
+		ri += z[n].i * z[n - 1].i + z[n].q * z[n - 1].q;
+		rq += z[n].q * z[n - 1].i - z[n].i * z[n - 1].q;
+	}
+	f1 = atan2(rq, ri) / (2.0 * M_PI);
+
+	/* Remove f1 from z, then refine with L&R */
+	for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++) {
+		double a = -2.0 * M_PI * f1 * (double)n;
+		double c = cos(a), s = sin(a);
+		double ti = z[n].i * c - z[n].q * s;
+		double tq = z[n].i * s + z[n].q * c;
+
+		z[n].i = ti;
+		z[n].q = tq;
+	}
+	f2 = lr_freq(z, DVBS2X_VLSNR_WH_LEN);
+
+	derotate(sym, wh_start, span, f1 + f2, 0.0);
+	free(z);
+}
+
+/*
+ * Residual carrier tracking: measure the phase on the header and on
+ * every pilot block, unwrap, weighted-linear-fit phase against frame
+ * position, and de-rotate the whole data field.
+ */
+static void residual_carrier_track(struct dvbs2x_complex *sym,
+				   unsigned int wh_start,
+				   unsigned int data_field_len,
+				   unsigned int num_tx_sym,
+				   const struct dvbs2x_complex *wh_ref)
+{
+	double pos[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
+	double ph[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
+	double wt[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
+	unsigned int ns = 0;
+	unsigned int data_start = wh_start + DVBS2X_VLSNR_WH_LEN;
+	unsigned int blk_off, n;
+	double ci, cq;
+	double sw, swp, swt, swpp, swpt, denom, a, b;
+	unsigned int k;
+
+	/* Header phase sample (anchor) at the header centre */
+	ci = 0.0;
+	cq = 0.0;
+	for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++) {
+		const struct dvbs2x_complex *r = &sym[wh_start + n];
+
+		ci += r->i * wh_ref[n].i + r->q * wh_ref[n].q;
+		cq += r->q * wh_ref[n].i - r->i * wh_ref[n].q;
+	}
+	pos[ns] = (double)(DVBS2X_VLSNR_WH_LEN - 1) / 2.0;
+	ph[ns] = atan2(cq, ci);
+	wt[ns] = (double)DVBS2X_VLSNR_WH_LEN;
+	ns++;
+
+	/* One phase sample per pilot block (vs reference (1+j)/sqrt2) */
+	for (blk_off = DVBS2X_PILOT_INTERVAL;
+	     blk_off + DVBS2X_PILOT_BLK_LEN <= data_field_len;
+	     blk_off += DVBS2X_PILOT_INTERVAL + DVBS2X_PILOT_BLK_LEN) {
+		ci = 0.0;
+		cq = 0.0;
+		for (n = 0; n < DVBS2X_PILOT_BLK_LEN; n++) {
+			const struct dvbs2x_complex *r =
+				&sym[data_start + blk_off + n];
+
+			ci += (r->i + r->q) * M_SQRT1_2_D;
+			cq += (r->q - r->i) * M_SQRT1_2_D;
+		}
+		pos[ns] = (double)DVBS2X_VLSNR_WH_LEN + (double)blk_off +
+			  (double)(DVBS2X_PILOT_BLK_LEN - 1) / 2.0;
+		ph[ns] = atan2(cq, ci);
+		wt[ns] = (double)DVBS2X_PILOT_BLK_LEN;
+		ns++;
+	}
+
+	/* Unwrap phase samples (ordered by increasing position) */
+	for (k = 1; k < ns; k++) {
+		double d = ph[k] - ph[k - 1];
+
+		while (d > M_PI) {
+			ph[k] -= 2.0 * M_PI;
+			d = ph[k] - ph[k - 1];
+		}
+		while (d < -M_PI) {
+			ph[k] += 2.0 * M_PI;
+			d = ph[k] - ph[k - 1];
+		}
+	}
+
+	/* Weighted linear fit phase = a*pos + b */
+	sw = swp = swt = swpp = swpt = 0.0;
+	for (k = 0; k < ns; k++) {
+		sw += wt[k];
+		swp += wt[k] * pos[k];
+		swt += wt[k] * ph[k];
+		swpp += wt[k] * pos[k] * pos[k];
+		swpt += wt[k] * pos[k] * ph[k];
+	}
+	denom = sw * swpp - swp * swp;
+	if (fabs(denom) < 1e-9) {
+		a = 0.0;
+		b = swt / sw;
+	} else {
+		a = (sw * swpt - swp * swt) / denom;
+		b = (swt - a * swp) / sw;
+	}
+
+	/* De-rotate the data field by the fitted phase line */
+	for (n = 0; n < data_field_len; n++) {
+		struct dvbs2x_complex *r = &sym[data_start + n];
+		double angle = a * (double)(DVBS2X_VLSNR_WH_LEN + n) + b;
+		double c = cos(angle), s = sin(angle);
+		double ti = r->i * c + r->q * s;
+		double tq = r->q * c - r->i * s;
+
+		r->i = ti;
+		r->q = tq;
+	}
+
+	(void)num_tx_sym;
+}
 
 int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 			    double rolloff,
 			    unsigned int sps,
 			    unsigned int pl_scrambling_idx)
 {
-	int ret;
-
 	memset(demod, 0, sizeof(*demod));
 	demod->modcod = NULL;	/* determined after frame sync */
 
-	/* Initialize RX matched filter */
-	ret = dvbs2x_rrc_filter_init(&demod->rx_filter, rolloff, sps, 16);
-	if (ret < 0)
+	if (sps < 2)
 		return -1;
 
-	/* Initialize timing recovery */
-	dvbs2x_timing_sync_init(&demod->timing, sps, 1e-4);
+	if (dvbs2x_rrc_filter_init(&demod->rx_filter, rolloff, sps, 16) < 0)
+		return -1;
 
-	/* Initialize coarse frequency estimator */
+	dvbs2x_timing_sync_init(&demod->timing, sps, 1e-3);
 	dvbs2x_freq_coarse_init(&demod->freq_coarse, 1e-4);
-
-	/* Initialize fine frequency estimator */
 	dvbs2x_freq_fine_init(&demod->freq_fine, 4);
-
-	/* Initialize phase estimator (alpha=0.3 for low SNR) */
 	dvbs2x_phase_est_init(&demod->phase, 0.3, 1);
-
-	/* Initialize descrambler */
 	dvbs2x_scrambler_init(&demod->descrambler, pl_scrambling_idx);
 
 	demod->sync_frames = 0;
@@ -61,173 +348,206 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 	return 0;
 }
 
+int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
+			      const struct dvbs2x_complex *input,
+			      unsigned int in_len,
+			      double noise_var,
+			      uint8_t *user_data,
+			      unsigned int *user_len)
+{
+	const struct dvbs2x_modcod *mc;
+	struct dvbs2x_complex *work = NULL;
+	struct dvbs2x_complex *wh_ref = NULL;
+	struct dvbs2x_complex *data_sym = NULL;
+	struct dvbs2x_complex *pilots = NULL;
+	struct dvbs2x_complex *despread = NULL;
+	double *llr = NULL;
+	double *deint = NULL;
+	uint8_t *ldpc_out = NULL;
+	uint8_t *bch_cw = NULL;
+	unsigned int wh_start = 0, modcod_idx = 0;
+	unsigned int search_len;
+	unsigned int num_tx_sym, data_field_len, data_start;
+	unsigned int ndata, num_mod_sym;
+	unsigned int iter_used;
+	double conf, demap_nv, nv_est, esn0_db;
+	int ret = -1;
+
+	if (in_len < DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN)
+		return -1;
+
+	/* Mutable copy: carrier recovery / descrambling work in place */
+	work = malloc(in_len * sizeof(struct dvbs2x_complex));
+	if (!work)
+		return -1;
+	memcpy(work, input, in_len * sizeof(struct dvbs2x_complex));
+
+	/*
+	 * Frame sync via Walsh-Hadamard correlation, bounded to the
+	 * acquisition window (the header read still extends past it).
+	 */
+	search_len = in_len;
+	if (search_len > ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN)
+		search_len = ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN;
+	conf = dvbs2x_vlsnr_header_sync(work, search_len, SYNC_SEG_LEN,
+					&wh_start, &modcod_idx);
+	if (conf < 0.05)
+		goto out;
+	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
+	if (!mc)
+		goto out;
+	demod->modcod = mc;
+
+	frame_geometry(mc, &num_tx_sym, &data_field_len);
+	data_start = wh_start + DVBS2X_VLSNR_WH_LEN;
+	if (getenv("DVBS2X_DEBUG"))
+		fprintf(stderr,
+			"[dbg] wh_start=%u modcod=%u conf=%.3f tx_sym=%u "
+			"dfl=%u in_len=%u\n",
+			wh_start, modcod_idx, conf, num_tx_sym,
+			data_field_len, in_len);
+	if (data_start + data_field_len > in_len)
+		goto out;
+
+	/* Carrier recovery */
+	wh_ref = malloc(DVBS2X_VLSNR_WH_LEN * sizeof(struct dvbs2x_complex));
+	if (!wh_ref)
+		goto out;
+	dvbs2x_vlsnr_header_generate(mc, wh_ref);
+
+	/* Estimate noise/SNR from the header (robust to small offsets) */
+	nv_est = estimate_noise_var(work, wh_start, wh_ref);
+	esn0_db = 10.0 * log10(1.0 / (2.0 * nv_est + 1e-12));
+	if (getenv("DVBS2X_DEBUG"))
+		fprintf(stderr, "[dbg] nv_est=%.4f esn0_est=%.2f dB\n",
+			nv_est, esn0_db);
+
+	coarse_freq_recover(work, wh_start,
+			    DVBS2X_VLSNR_WH_LEN + data_field_len, wh_ref,
+			    esn0_db);
+
+	/* Descramble the data field (payload + pilots) */
+	dvbs2x_scrambler_reset(&demod->descrambler);
+	dvbs2x_descramble(&demod->descrambler, work + data_start,
+			  data_field_len);
+
+	/* Residual phase/frequency tracking from header + pilots */
+	residual_carrier_track(work, wh_start, data_field_len, num_tx_sym,
+			       wh_ref);
+
+	/* Extract pilots and data symbols */
+	data_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
+	pilots = malloc((data_field_len - num_tx_sym + 1) *
+			sizeof(struct dvbs2x_complex));
+	if (!data_sym || !pilots)
+		goto out;
+
+	ndata = dvbs2x_pilot_extract(work + data_start, data_field_len,
+				     data_sym, pilots, mc);
+
+	/* Despread if needed */
+	if (mc->has_spread) {
+		unsigned int dl = ndata / 2;
+
+		despread = malloc(dl * sizeof(struct dvbs2x_complex));
+		if (!despread)
+			goto out;
+		dvbs2x_demod_despread(data_sym, despread, dl);
+		num_mod_sym = dl;
+	} else {
+		despread = data_sym;
+		data_sym = NULL;
+		num_mod_sym = ndata;
+	}
+
+	/* Soft demapping */
+	demap_nv = (noise_var > 0.0) ? noise_var : nv_est;
+	if (mc->has_spread)
+		demap_nv *= 0.5;	/* despread halves the noise */
+
+	llr = malloc(mc->fec_len * sizeof(double));
+	deint = malloc(mc->fec_len * sizeof(double));
+	if (!llr || !deint)
+		goto out;
+
+	if (mc->modulation == DVBS2X_MOD_QPSK)
+		dvbs2x_demod_qpsk(despread, llr, num_mod_sym, demap_nv);
+	else
+		dvbs2x_demod_pi2bpsk(despread, llr, num_mod_sym, demap_nv);
+
+	/* Deinterleave */
+	dvbs2x_deinterleave(mc, llr, deint);
+
+	/* LDPC decode */
+	if (dvbs2x_ldpc_decoder_init(&demod->ldpc_dec, mc,
+				     DVBS2X_LDPC_MAX_ITER) < 0)
+		goto out;
+	ldpc_out = malloc(mc->k_ldpc);
+	if (!ldpc_out)
+		goto out;
+	dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out, &iter_used);
+
+	/* BCH decode */
+	if (dvbs2x_bch_decoder_init(&demod->bch_dec, mc) < 0)
+		goto out;
+	bch_cw = malloc(mc->n_bch);
+	if (!bch_cw)
+		goto out;
+	memcpy(bch_cw, ldpc_out, mc->n_bch);
+	if (dvbs2x_bch_decode(&demod->bch_dec, bch_cw) < 0)
+		goto out;
+
+	/* BB frame parse */
+	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_TS);
+	ret = dvbs2x_bb_frame_parse(&demod->bb_ctx, bch_cw,
+				    user_data, user_len);
+
+out:
+	free(work);
+	free(wh_ref);
+	free(data_sym);
+	free(pilots);
+	free(despread);
+	free(llr);
+	free(deint);
+	free(ldpc_out);
+	free(bch_cw);
+	return ret;
+}
+
 int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 		      const struct dvbs2x_complex *input,
 		      unsigned int in_len,
 		      uint8_t *user_data,
 		      unsigned int *user_len)
 {
-	const struct dvbs2x_modcod *mc = NULL;
 	struct dvbs2x_complex *filtered = NULL;
 	struct dvbs2x_complex *symbols = NULL;
-	struct dvbs2x_complex *data_sym = NULL;
-	struct dvbs2x_complex *despread = NULL;
-	double *llr = NULL;
-	double *deinterleaved = NULL;
-	uint8_t *ldpc_out = NULL;
-	uint8_t *bch_codeword = NULL;
-	unsigned int filt_len;
-	unsigned int sym_len;
-	unsigned int data_len;
-	unsigned int num_sym;
-	unsigned int modcod_idx;
-	unsigned int frame_offset;
-	unsigned int iter_used;
+	unsigned int filt_len = 0, sym_len = 0;
 	int ret = -1;
 
-	/* Step 1: Matched filter */
+	/* Matched filter */
 	filtered = malloc(in_len * sizeof(struct dvbs2x_complex));
 	if (!filtered)
 		goto out;
-
 	dvbs2x_rrc_filter_reset(&demod->rx_filter);
 	dvbs2x_rrc_filter_apply(&demod->rx_filter, input, in_len,
 				filtered, &filt_len);
 
-	/* Step 2: Symbol timing recovery */
-	symbols = malloc((filt_len / demod->timing.sps + 1) *
+	/* Symbol timing recovery */
+	symbols = malloc((filt_len / demod->timing.sps + 2) *
 			 sizeof(struct dvbs2x_complex));
 	if (!symbols)
 		goto out;
-
+	dvbs2x_timing_sync_init(&demod->timing, demod->timing.sps, 1e-3);
 	dvbs2x_timing_sync_process(&demod->timing, filtered, filt_len,
 				   symbols, &sym_len);
 
-	/* Step 3: Coarse frequency correction */
-	dvbs2x_freq_coarse_process(&demod->freq_coarse, symbols, sym_len);
-
-	/* Step 4: Frame synchronization (WH header correlation) */
-	dvbs2x_vlsnr_header_sync(symbols, sym_len,
-				 DVBS2X_VLSNR_WH_LEN,
-				 &frame_offset, &modcod_idx);
-
-	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
-	if (!mc)
-		goto out;
-	demod->modcod = mc;
-
-	/* Skip to frame start (past PL header + VL-SNR header) */
-	{
-		unsigned int hdr_end;
-
-		hdr_end = frame_offset + DVBS2X_PLHEADER_LEN +
-			  DVBS2X_VLSNR_HDR_LEN;
-		if (hdr_end >= sym_len)
-			goto out;
-
-		/* Step 5: Descramble (skip PL header) */
-		dvbs2x_scrambler_reset(&demod->descrambler);
-		dvbs2x_descramble(&demod->descrambler,
-				  symbols + frame_offset + DVBS2X_PLHEADER_LEN,
-				  sym_len - frame_offset - DVBS2X_PLHEADER_LEN);
-
-		/* Step 6: Extract data (remove pilots) */
-		if (mc->modulation == DVBS2X_MOD_QPSK)
-			num_sym = mc->fec_len / 2;
-		else
-			num_sym = mc->fec_len;
-
-		if (mc->has_spread)
-			num_sym *= 2;
-
-		data_sym = malloc(num_sym * sizeof(struct dvbs2x_complex));
-		if (!data_sym)
-			goto out;
-
-		data_len = dvbs2x_pilot_extract(
-			symbols + hdr_end,
-			sym_len - hdr_end,
-			data_sym, NULL, mc);
-
-		if (data_len < num_sym)
-			num_sym = data_len;
-	}
-
-	/* Step 7: Despread if needed */
-	if (mc->has_spread) {
-		unsigned int despread_len = num_sym / 2;
-
-		despread = malloc(despread_len *
-				  sizeof(struct dvbs2x_complex));
-		if (!despread)
-			goto out;
-		dvbs2x_demod_despread(data_sym, despread, despread_len);
-		num_sym = despread_len;
-	} else {
-		despread = data_sym;
-		data_sym = NULL;
-	}
-
-	/* Step 8: Soft demapping */
-	llr = malloc(mc->fec_len * sizeof(double));
-	if (!llr)
-		goto out;
-
-	{
-		/* Estimate noise variance from signal power */
-		double noise_var = 0.5;	/* default for low SNR */
-
-		if (mc->modulation == DVBS2X_MOD_QPSK)
-			dvbs2x_demod_qpsk(despread, llr, num_sym, noise_var);
-		else
-			dvbs2x_demod_pi2bpsk(despread, llr, num_sym,
-					     noise_var);
-	}
-
-	/* Step 9: Deinterleave */
-	deinterleaved = malloc(mc->fec_len * sizeof(double));
-	if (!deinterleaved)
-		goto out;
-	dvbs2x_deinterleave(mc, llr, deinterleaved);
-
-	/* Step 10: LDPC decode */
-	if (dvbs2x_ldpc_decoder_init(&demod->ldpc_dec, mc,
-				     DVBS2X_LDPC_MAX_ITER) < 0)
-		goto out;
-
-	ldpc_out = malloc(mc->k_ldpc);
-	if (!ldpc_out)
-		goto out;
-
-	dvbs2x_ldpc_decode(&demod->ldpc_dec, deinterleaved,
-			   ldpc_out, &iter_used);
-
-	/* Step 11: BCH decode */
-	if (dvbs2x_bch_decoder_init(&demod->bch_dec, mc) < 0)
-		goto out;
-
-	bch_codeword = malloc(mc->n_bch);
-	if (!bch_codeword)
-		goto out;
-	memcpy(bch_codeword, ldpc_out, mc->n_bch);
-
-	if (dvbs2x_bch_decode(&demod->bch_dec, bch_codeword) < 0)
-		goto out;
-
-	/* Step 12: BB frame parse */
-	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_TS);
-	ret = dvbs2x_bb_frame_parse(&demod->bb_ctx, bch_codeword,
-				    user_data, user_len);
+	ret = dvbs2x_demodulate_symbols(demod, symbols, sym_len, 0.0,
+					user_data, user_len);
 
 out:
 	free(filtered);
 	free(symbols);
-	free(data_sym);
-	if (mc && mc->has_spread)
-		free(despread);
-	free(llr);
-	free(deinterleaved);
-	free(ldpc_out);
-	free(bch_codeword);
 	return ret;
 }

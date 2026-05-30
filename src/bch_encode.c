@@ -34,7 +34,8 @@ static const uint32_t prim_polys[] = {
  *
  * Returns the polynomial as a bitmask (bit i = coefficient of x^i).
  */
-static uint32_t compute_min_poly(unsigned int m, uint32_t prim_poly __attribute__((unused)),
+static uint32_t compute_min_poly(unsigned int m,
+				 uint32_t prim_poly __attribute__((unused)),
 				 unsigned int k, unsigned int *deg,
 				 const int *exp_table, unsigned int n)
 {
@@ -68,7 +69,8 @@ static uint32_t compute_min_poly(unsigned int m, uint32_t prim_poly __attribute_
 
 	for (d = 0; d <= m; d++) {
 		unsigned int vec = powers[d];
-		unsigned int row_bits = (1u << d);  /* tracks which powers contribute */
+		/* tracks which powers contribute */
+		unsigned int row_bits = (1u << d);
 
 		/* Reduce vec using existing pivots */
 		for (i = 0; i < m; i++) {

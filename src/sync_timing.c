@@ -2,57 +2,75 @@
 /*
  * DVB-S2X VL-SNR Symbol Timing Recovery
  *
- * Gardner (non-data-aided) timing error detector with a
- * proportional-integral loop filter.
+ * Feed-forward symbol-timing estimation using the Oerder & Meyr
+ * "square-and-DFT" algorithm.  The squared magnitude of an
+ * oversampled, pulse-shaped signal contains a spectral line at the
+ * symbol rate whose phase gives the optimum sampling instant:
  *
- * The Gardner TED computes:
- *   e(n) = Re{y(n-1/2) * conj(y(n) - y(n-1))}
+ *   X = sum_n |x[n]|^2 * exp(-j 2 pi n / sps)
+ *   tau = -arg(X) / (2 pi)            (fraction of a symbol)
  *
- * where y(n-1/2) is the midpoint sample between two symbol
- * instants. This works for any PSK/QAM constellation without
- * requiring knowledge of the transmitted symbols.
+ * The estimate is non-data-aided and, being averaged over the whole
+ * burst, is robust well below 0 dB Es/N0.  Because it is feed-forward
+ * there is no loop transient, so the (constant-envelope, repeated)
+ * spread VL-SNR waveforms are resampled cleanly - essential for the
+ * symbol pairing used by despreading.
  *
- * Reference: F.M. Gardner, "A BPSK/QPSK Timing-Error Detector
- *            for Sampled Receivers," IEEE Trans. Comm., 1986.
+ * The signal is then resampled at instants (tau + m) * sps using a
+ * 4-point cubic interpolator.
+ *
+ * Reference: M. Oerder and H. Meyr, "Digital filter and square timing
+ *            recovery," IEEE Trans. Comm., 1988.
  */
 
 #include "sync.h"
 #include <math.h>
 #include <string.h>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 void dvbs2x_timing_sync_init(struct dvbs2x_timing_sync *ts,
 			     unsigned int sps, double loop_bw)
 {
-	double damp = 1.0 / sqrt(2.0);
-	double bw_norm = loop_bw;
-	double denom;
-
 	ts->sps = sps;
 	ts->loop_bw = loop_bw;
 	ts->mu = 0.0;
 	ts->integrator = 0.0;
-
-	/*
-	 * PI loop filter gains from loop bandwidth and damping:
-	 *   Kp = (4 * damp * bw_norm) / (1 + 2*damp*bw_norm + bw_norm^2)
-	 *   Ki = (4 * bw_norm^2) / (1 + 2*damp*bw_norm + bw_norm^2)
-	 */
-	denom = 1.0 + 2.0 * damp * bw_norm + bw_norm * bw_norm;
-	ts->kp = (4.0 * damp * bw_norm) / denom;
-	ts->ki = (4.0 * bw_norm * bw_norm) / denom;
+	ts->kp = 0.0;
+	ts->ki = 0.0;
 }
 
-/*
- * Linear interpolation between two samples.
- */
-static struct dvbs2x_complex interp_linear(const struct dvbs2x_complex *s,
-					   double mu)
+/* 4-point cubic (Catmull-Rom) interpolation at fractional index pos. */
+static struct dvbs2x_complex cubic_interp(const struct dvbs2x_complex *x,
+					  unsigned int len, double pos)
 {
-	struct dvbs2x_complex result;
+	struct dvbs2x_complex out = {0.0, 0.0};
+	long i = (long)floor(pos);
+	double f = pos - (double)i;
+	double f2 = f * f;
+	double f3 = f2 * f;
+	double c0, c1, c2, c3;
+	long im1 = i - 1, ip1 = i + 1, ip2 = i + 2;
 
-	result.i = s[0].i + mu * (s[1].i - s[0].i);
-	result.q = s[0].q + mu * (s[1].q - s[0].q);
-	return result;
+	if (im1 < 0)
+		im1 = 0;
+	if (i < 0)
+		i = 0;
+	if (ip1 >= (long)len)
+		ip1 = len - 1;
+	if (ip2 >= (long)len)
+		ip2 = len - 1;
+
+	c0 = -0.5 * f3 + f2 - 0.5 * f;
+	c1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+	c2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+	c3 = 0.5 * f3 - 0.5 * f2;
+
+	out.i = c0 * x[im1].i + c1 * x[i].i + c2 * x[ip1].i + c3 * x[ip2].i;
+	out.q = c0 * x[im1].q + c1 * x[i].q + c2 * x[ip1].q + c3 * x[ip2].q;
+	return out;
 }
 
 void dvbs2x_timing_sync_process(struct dvbs2x_timing_sync *ts,
@@ -61,63 +79,41 @@ void dvbs2x_timing_sync_process(struct dvbs2x_timing_sync *ts,
 				struct dvbs2x_complex *out,
 				unsigned int *out_len)
 {
-	unsigned int idx = 0;
-	unsigned int out_idx = 0;
-	struct dvbs2x_complex prev_sym = {0.0, 0.0};
-	struct dvbs2x_complex mid_sym;
-	struct dvbs2x_complex cur_sym;
-	double ted_err;
-	double loop_out;
-	int have_prev = 0;
+	unsigned int sps = ts->sps;
+	double cr = 0.0, ci = 0.0;
+	double tau, off;
+	unsigned int n, m;
 
-	while (idx + ts->sps < in_len) {
-		unsigned int base;
-		int int_mu;
-
-		/* Compute interpolation point */
-		int_mu = (int)ts->mu;
-		base = idx + int_mu;
-		if (base + 1 >= in_len)
-			break;
-
-		/* Interpolate at symbol instant */
-		cur_sym = interp_linear(&in[base], ts->mu - int_mu);
-
-		/* Interpolate at midpoint (half symbol earlier) */
-		if (have_prev && base >= ts->sps / 2) {
-			unsigned int mid_base;
-			double mid_mu;
-
-			mid_base = base - ts->sps / 2;
-			mid_mu = ts->mu - int_mu;
-			if (mid_base + 1 < in_len)
-				mid_sym = interp_linear(&in[mid_base], mid_mu);
-			else
-				mid_sym = cur_sym;
-
-			/* Gardner TED */
-			ted_err = mid_sym.i * (prev_sym.i - cur_sym.i) +
-				  mid_sym.q * (prev_sym.q - cur_sym.q);
-
-			/* PI loop filter */
-			ts->integrator += ts->ki * ted_err;
-			loop_out = ts->kp * ted_err + ts->integrator;
-
-			/* Update fractional delay */
-			ts->mu += ts->sps + loop_out;
-		} else {
-			ts->mu += ts->sps;
-		}
-
-		out[out_idx] = cur_sym;
-		out_idx++;
-		prev_sym = cur_sym;
-		have_prev = 1;
-
-		/* Advance input index */
-		idx += (unsigned int)ts->mu;
-		ts->mu -= (unsigned int)ts->mu;
+	if (sps < 2 || in_len < sps) {
+		memcpy(out, in, in_len * sizeof(*in));
+		*out_len = in_len;
+		return;
 	}
 
-	*out_len = out_idx;
+	/* Oerder-Meyr spectral-line timing estimate */
+	for (n = 0; n < in_len; n++) {
+		double e = in[n].i * in[n].i + in[n].q * in[n].q;
+		double ang = -2.0 * M_PI * (double)(n % sps) / (double)sps;
+
+		cr += e * cos(ang);
+		ci += e * sin(ang);
+	}
+
+	/* Optimum sampling instant within a symbol, in samples [0, sps) */
+	tau = -atan2(ci, cr) / (2.0 * M_PI);
+	off = tau * (double)sps;
+	while (off < 1.0)
+		off += (double)sps;
+
+	/* Resample at off + m*sps */
+	m = 0;
+	for (;;) {
+		double pos = off + (double)m * (double)sps;
+
+		if (pos + 2.0 >= (double)in_len)
+			break;
+		out[m] = cubic_interp(in, in_len, pos);
+		m++;
+	}
+	*out_len = m;
 }

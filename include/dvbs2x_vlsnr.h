@@ -85,6 +85,26 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 		    unsigned int *out_len);
 
 /*
+ * dvbs2x_modulate_symbols - Build the PL frame at symbol rate
+ * @mod: initialized modulator
+ * @user_data: input user data bits
+ * @user_len: user data length in bits
+ * @symbols: output complex symbols (caller-allocated, see below)
+ * @sym_len: number of symbols produced
+ *
+ * Performs everything except RRC pulse shaping, producing the
+ * symbol-rate PL frame.  The output buffer must hold at least
+ * PLHEADER + VLSNR header + fec_len*2 + fec_len/360 + 64 symbols.
+ *
+ * Returns 0 on success, -1 on error.
+ */
+int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
+			    const uint8_t *user_data,
+			    unsigned int user_len,
+			    struct dvbs2x_complex *symbols,
+			    unsigned int *sym_len);
+
+/*
  * dvbs2x_demodulator_init - Initialize demodulator
  * @demod: demodulator context
  * @rolloff: expected roll-off factor
@@ -116,5 +136,31 @@ int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 		      unsigned int in_len,
 		      uint8_t *user_data,
 		      unsigned int *user_len);
+
+/*
+ * dvbs2x_demodulate_symbols - Demodulate a symbol-rate stream
+ * @demod: initialized demodulator
+ * @input: input complex symbols (symbol rate, post matched filter)
+ * @in_len: number of input symbols
+ * @noise_var: per-component noise variance estimate (0 = auto)
+ * @user_data: output user data bits
+ * @user_len: output user data length in bits
+ *
+ * Performs: frame sync -> WH-aided carrier recovery -> descramble ->
+ * pilot-aided phase -> pilot extract -> demap -> deinterleave ->
+ * depuncture -> LDPC decode -> BCH decode -> BB frame parse.
+ *
+ * This is the symbol-level core used by dvbs2x_demodulate() after
+ * matched filtering and timing recovery.  Exposed for testing the
+ * receiver independently of the RF front-end.
+ *
+ * Returns 0 on success, -1 on decode failure.
+ */
+int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
+			      const struct dvbs2x_complex *input,
+			      unsigned int in_len,
+			      double noise_var,
+			      uint8_t *user_data,
+			      unsigned int *user_len);
 
 #endif /* DVBS2X_VLSNR_H */

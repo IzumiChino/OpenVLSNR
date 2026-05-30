@@ -49,6 +49,9 @@ void dvbs2x_phase_est_process(struct dvbs2x_phase_est *pe,
 	double ti, tq;
 	unsigned int n;
 
+	if (num_pilots == 0)
+		return;
+
 	/* Compute phase from pilot correlation */
 	for (n = 0; n < num_pilots; n++) {
 		corr_i += pilots[n].i * ref_pilots[n].i +

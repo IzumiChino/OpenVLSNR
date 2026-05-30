@@ -2,7 +2,8 @@
 /*
  * DVB-S2X VL-SNR LDPC Decoder
  *
- * Flooding schedule offset min-sum belief propagation decoder.
+ * Layered sum-product (belief propagation) decoder using the
+ * box-plus operator for exact check-node updates.
  *
  * Uses Compressed Sparse Row (CSR) format for the H matrix to
  * handle the high check node degrees that arise in VL-SNR codes
@@ -20,8 +21,40 @@
 #include <math.h>
 #include <stdlib.h>
 
-/* Default normalized min-sum scaling factor */
-#define LDPC_NMS_FACTOR	0.75
+/* LLR clamp magnitude -- prevents Inf-Inf = NaN in boxplus */
+#define LLR_CLAMP	40.0
+
+/*
+ * Exact check-node update in the LLR domain (the "box-plus" operator):
+ *
+ *   a [+] b = sign(a) sign(b) min(|a|,|b|)
+ *             + log(1+e^{-|a+b|}) - log(1+e^{-|a-b|})
+ *
+ * This is the sum-product (belief-propagation) check rule.  Compared to
+ * min-sum it recovers the ~0.5-1 dB that matters at VL-SNR operating
+ * points.  log1p(exp(-x)) is numerically stable for all x >= 0.
+ */
+static inline double boxplus(double a, double b)
+{
+	double sgn, aa, ab, mn, corr;
+
+	if (a > LLR_CLAMP)
+		a = LLR_CLAMP;
+	else if (a < -LLR_CLAMP)
+		a = -LLR_CLAMP;
+	if (b > LLR_CLAMP)
+		b = LLR_CLAMP;
+	else if (b < -LLR_CLAMP)
+		b = -LLR_CLAMP;
+
+	sgn = ((a < 0.0) ? -1.0 : 1.0) * ((b < 0.0) ? -1.0 : 1.0);
+	aa = fabs(a);
+	ab = fabs(b);
+	mn = (aa < ab) ? aa : ab;
+	corr = log1p(exp(-fabs(a + b))) - log1p(exp(-fabs(a - b)));
+
+	return sgn * mn + corr;
+}
 
 /* CSR sparse matrix */
 struct ldpc_csr {
@@ -172,7 +205,6 @@ int dvbs2x_ldpc_decoder_init(struct dvbs2x_ldpc_decoder *dec,
 	dec->code.num_groups = num_groups;
 	dec->code.table = table;
 	dec->max_iter = max_iter;
-	dec->offset = LDPC_NMS_FACTOR;
 	dec->xp = modcod->xp;
 	dec->p_period = modcod->p_period;
 	dec->xs = modcod->xs;
@@ -190,10 +222,14 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	struct ldpc_csr csr;
 	double *vn_llr;		/* total VN belief */
 	double *edge_msg;	/* CN-to-VN messages (one per edge) */
+	double *v2c = NULL;	/* per-row VN->CN messages */
+	double *fwd = NULL;	/* forward box-plus accumulation */
+	double *bwd = NULL;	/* backward box-plus accumulation */
+	unsigned int max_deg = 0;
 	unsigned int iter;
 	unsigned int i, j;
 	int ret = -1;
-	int converged;
+	int converged = 0;
 
 	/*
 	 * Build H matrix in CSR format.
@@ -205,11 +241,22 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	if (build_csr(&dec->code, &csr) < 0)
 		return -1;
 
+	/* Largest check-node degree (sizes the per-row scratch buffers) */
+	for (i = 0; i < m; i++) {
+		unsigned int deg = csr.row_ptr[i + 1] - csr.row_ptr[i];
+
+		if (deg > max_deg)
+			max_deg = deg;
+	}
+
 	/* Allocate working memory */
 	vn_llr = malloc(n * sizeof(double));
 	edge_msg = calloc(csr.num_edges, sizeof(double));
+	v2c = malloc((max_deg + 1) * sizeof(double));
+	fwd = malloc((max_deg + 1) * sizeof(double));
+	bwd = malloc((max_deg + 1) * sizeof(double));
 
-	if (!vn_llr || !edge_msg)
+	if (!vn_llr || !edge_msg || !v2c || !fwd || !bwd)
 		goto out;
 
 	/* Initialize VN LLRs from channel */
@@ -226,62 +273,48 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 	/* Iterative decoding (layered schedule) */
 	for (iter = 0; iter < dec->max_iter; iter++) {
 
-		/* For each check node (row of H) */
+		/* For each check node (row of H): layered sum-product */
 		for (i = 0; i < m; i++) {
 			unsigned int row_start = csr.row_ptr[i];
 			unsigned int row_end = csr.row_ptr[i + 1];
 			unsigned int degree = row_end - row_start;
-			double sign_prod;
-			double min1, min2;
-			unsigned int min1_pos;
+			unsigned int d;
 
 			if (degree == 0)
 				continue;
 
-			/* Find min and sign product */
-			sign_prod = 1.0;
-			min1 = 1e30;
-			min2 = 1e30;
-			min1_pos = row_start;
+			/* Gather extrinsic VN->CN messages for this row */
+			for (d = 0; d < degree; d++) {
+				unsigned int vn = csr.col_idx[row_start + d];
 
-			for (j = row_start; j < row_end; j++) {
-				unsigned int vn = csr.col_idx[j];
-				double v2c = vn_llr[vn] - edge_msg[j];
-				double abs_v2c = fabs(v2c);
-
-				if (v2c < 0)
-					sign_prod = -sign_prod;
-
-				if (abs_v2c < min1) {
-					min2 = min1;
-					min1 = abs_v2c;
-					min1_pos = j;
-				} else if (abs_v2c < min2) {
-					min2 = abs_v2c;
-				}
+				v2c[d] = vn_llr[vn] - edge_msg[row_start + d];
 			}
 
-			/* Update CN-to-VN messages (normalized min-sum) */
-			for (j = row_start; j < row_end; j++) {
-				unsigned int vn = csr.col_idx[j];
-				double v2c = vn_llr[vn] - edge_msg[j];
-				double msg_sign;
-				double msg_abs;
+			/* Forward / backward box-plus accumulation */
+			fwd[0] = v2c[0];
+			for (d = 1; d < degree; d++)
+				fwd[d] = boxplus(fwd[d - 1], v2c[d]);
+			bwd[degree - 1] = v2c[degree - 1];
+			for (d = degree - 1; d-- > 0; )
+				bwd[d] = boxplus(bwd[d + 1], v2c[d]);
+
+			/* Extrinsic CN->VN message excludes the target edge */
+			for (d = 0; d < degree; d++) {
+				unsigned int vn = csr.col_idx[row_start + d];
 				double new_msg;
 
-				msg_sign = sign_prod;
-				if (v2c < 0)
-					msg_sign = -msg_sign;
-
-				if (j == min1_pos)
-					msg_abs = min2 * dec->offset;
+				if (degree == 1)
+					new_msg = 0.0;
+				else if (d == 0)
+					new_msg = bwd[1];
+				else if (d == degree - 1)
+					new_msg = fwd[degree - 2];
 				else
-					msg_abs = min1 * dec->offset;
+					new_msg = boxplus(fwd[d - 1],
+							  bwd[d + 1]);
 
-				new_msg = msg_sign * msg_abs;
-
-				vn_llr[vn] += new_msg - edge_msg[j];
-				edge_msg[j] = new_msg;
+				vn_llr[vn] += new_msg - edge_msg[row_start + d];
+				edge_msg[row_start + d] = new_msg;
 			}
 		}
 
@@ -320,6 +353,9 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 out:
 	free(vn_llr);
 	free(edge_msg);
+	free(v2c);
+	free(fwd);
+	free(bwd);
 	free_csr(&csr);
 	return ret;
 }

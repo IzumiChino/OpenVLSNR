@@ -76,7 +76,9 @@ int dvbs2x_ldpc_encode(const struct dvbs2x_ldpc_encoder *enc,
 		entry = &enc->code.table[group];
 
 		for (j = 0; j < DVBS2X_LDPC_PARALLEL; j++) {
-			unsigned int bit_idx = group * DVBS2X_LDPC_PARALLEL + j;
+			unsigned int bit_idx;
+
+			bit_idx = group * DVBS2X_LDPC_PARALLEL + j;
 
 			if (!info[bit_idx])
 				continue;

@@ -50,7 +50,6 @@ struct dvbs2x_ldpc_encoder {
 struct dvbs2x_ldpc_decoder {
 	struct dvbs2x_ldpc_code	code;
 	unsigned int		max_iter;
-	double			offset;		/* min-sum offset */
 	unsigned int		xp;		/* punctured parity bits */
 	unsigned int		p_period;	/* puncturing period */
 	unsigned int		xs;		/* shortened info bits */

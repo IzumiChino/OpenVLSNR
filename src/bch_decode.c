@@ -170,9 +170,13 @@ int dvbs2x_bch_decode(const struct dvbs2x_bch_decoder *dec,
 			/* sigma_new(x) = sigma(x) - d * x * b(x) */
 			memcpy(sigma_new, sigma, sizeof(sigma));
 			for (i = 0; i <= 2 * dec->t - 1; i++) {
-				if (b[i] != 0)
-					sigma_new[i + 1] = gf_add(sigma_new[i + 1],
-						gf_mul(&gf, d, b[i]));
+				if (b[i] != 0) {
+					unsigned int v;
+
+					v = gf_mul(&gf, d, b[i]);
+					sigma_new[i + 1] =
+						gf_add(sigma_new[i + 1], v);
+				}
 			}
 
 			if (2 * l <= (int)n - 1) {
