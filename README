@@ -1,61 +1,326 @@
-DVB-S2X VL-SNR Modulator/Demodulator
+		DVB-S2X VL-SNR Modulator/Demodulator
+		====================================
 
-This is an implementation of the DVB-S2X Very Low Signal-to-Noise
-Ratio (VL-SNR) physical layer, covering all 9 MODCODs defined in
-ETSI EN 302 307-2.  Operating range is -2 dB to -10 dB Es/N0.
+This is a C implementation of the DVB-S2X Very Low Signal-to-Noise Ratio
+(VL-SNR) physical layer as specified in ETSI EN 302 307-2.  All 9 MODCODs
+are implemented, covering the operating range from -2 dB to -10 dB Es/N0.
 
-Build
------
+The library provides a complete transmit and receive chain including FEC
+(BCH + LDPC), pi/2-BPSK and QPSK modulation, symbol spreading, pilot
+insertion, PL scrambling, RRC pulse shaping, symbol timing recovery,
+carrier frequency/phase recovery, and frame synchronization.
 
-	make
-	make DEBUG=1		# debug build
-	make test		# run unit tests
-	make clean
 
-Requirements: GCC with C11 support, libm.
+Building
+--------
 
-Structure
----------
+	make			Build libdvbs2x_vlsnr.a
+	make DEBUG=1		Debug build (-g -O0)
+	make test		Build and run all tests
+	make clean		Remove objects and binaries
 
-	include/	Public headers
-	src/		Library source
-	tables/		LDPC parity address tables
-	test/		Unit tests
+Requirements: GCC with C11 support, libm.  No external dependencies.
 
-The build produces libdvbs2x_vlsnr.a (static library).
+
+Directory Layout
+----------------
+
+	include/		Public headers
+	src/			Library source
+	tables/			LDPC parity-check address tables
+	test/			Test programs
+
+The build produces a single static library: libdvbs2x_vlsnr.a
+
+
+Supported MODCODs
+-----------------
+
+  Index  Modulation     Rate   FEC     Spread  Es/N0 threshold
+  -----  ----------     ----   -----   ------  ---------------
+    1    QPSK           2/9    64800     no       -3 dB
+    2    pi/2-BPSK      1/5    32400     no       -6 dB
+    3    pi/2-BPSK      11/45  32400     no       -5 dB
+    4    pi/2-BPSK      1/3    32400     no       -4 dB
+    5    pi/2-BPSK      1/5    16200     x2       -9 dB
+    6    pi/2-BPSK      11/45  16200     x2       -8 dB
+    7    pi/2-BPSK      1/5    16200     no       -6 dB
+    8    pi/2-BPSK      4/15   16200     no       -5 dB
+    9    pi/2-BPSK      1/3    16200     no       -4 dB
+
+Thresholds are measured through the full RF chain (RRC + timing offset
+0.30 symbol + frequency offset 1e-4 cycles/symbol + phase offset 0.7 rad
++ AWGN) at FER < 1e-2.
+
 
 Signal Chain
 ------------
 
 Transmitter:
 
-	User data -> BB frame -> BCH -> LDPC -> interleave ->
-	modulate (pi/2-BPSK or QPSK) -> spread (optional) ->
-	PL frame (header + WH header + pilots) -> scramble ->
-	RRC pulse shape -> baseband IQ
+	User data -> BB frame -> BCH encode -> LDPC encode ->
+	bit interleave -> modulate (pi/2-BPSK or QPSK) ->
+	symbol spread (MODCODs 5,6 only) ->
+	PL frame assembly (PL header + WH header + pilots) ->
+	PL scramble (data field only) -> RRC pulse shape
 
 Receiver:
 
-	Baseband IQ -> RRC matched filter -> timing recovery ->
-	coarse freq (BQ-FED) -> frame sync (WH correlation) ->
-	fine freq (pilot-aided) -> phase est -> descramble ->
-	pilot extract -> despread (optional) -> soft demap ->
-	deinterleave -> LDPC decode -> BCH decode -> BB frame
-	parse -> user data
+	RRC matched filter -> Oerder-Meyr timing recovery ->
+	frame sync (segment-coherent WH correlation) ->
+	coarse frequency (L&R, SNR-gated) ->
+	residual carrier track (WH + pilot linear phase fit) ->
+	PL descramble -> pilot extract -> despread ->
+	soft demap (LLR) -> deinterleave ->
+	LDPC decode (sum-product) -> BCH decode -> BB frame parse
 
-Status
-------
 
-LDPC parity address tables are placeholders.  Real values from
-ETSI EN 302 307-2 Annex B must be transcribed before the LDPC
-decoder will converge at operational SNR.
+Public API
+----------
+
+The public interface is defined in include/dvbs2x_vlsnr.h.  Link against
+libdvbs2x_vlsnr.a and libm.
+
+All functions return 0 on success, -1 on error unless noted otherwise.
+
+
+1. Initialization
+
+	#include "dvbs2x_vlsnr.h"
+
+	struct dvbs2x_modulator mod;
+	struct dvbs2x_demodulator demod;
+
+	dvbs2x_modulator_init(&mod, modcod_idx, rolloff, sps, scrambling_idx);
+	dvbs2x_demodulator_init(&demod, rolloff, sps, scrambling_idx);
+
+  modcod_idx	MODCOD index, 1 through 9 (see table above).
+  rolloff	RRC roll-off factor.  Use 0.35 (DVB-S2X Annex D default)
+		or 0.20 / 0.25 / 0.10 per system configuration.
+  sps		Samples per symbol.  Minimum 2.
+  scrambling_idx  PL scrambling sequence index, 0-7.  Use 0 for default.
+
+
+2. Modulation (RF output)
+
+	struct dvbs2x_complex *output;
+	unsigned int out_len;
+
+	output = malloc(cap * sizeof(struct dvbs2x_complex));
+	dvbs2x_modulate(&mod, user_data, user_bits, output, &out_len);
+
+  user_data	Input bit array (uint8_t, one bit per byte, values 0/1).
+  user_bits	Number of user data bits.  Maximum is k_bch - 80 for the
+		selected MODCOD (80 bits reserved for BB frame header).
+  output	Caller-allocated buffer for complex baseband IQ samples
+		at the configured samples-per-symbol rate.
+  out_len	Receives the number of output samples written.
+
+  The output buffer must be large enough to hold the full frame.  A safe
+  upper bound is:
+
+	cap = (DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN +
+	       mc->fec_len * 2 +
+	       (mc->fec_len * 2 / 1440 + 1) * 36 + 64) * sps;
+
+
+3. Modulation (symbol-rate output)
+
+	struct dvbs2x_complex *symbols;
+	unsigned int sym_len;
+
+	dvbs2x_modulate_symbols(&mod, user_data, user_bits,
+				symbols, &sym_len);
+
+  Same as dvbs2x_modulate() but produces symbol-rate output without RRC
+  pulse shaping.  Useful for simulation at symbol level or when the pulse
+  shaping is handled externally (e.g. by an FPGA or SDR front-end).
+
+
+4. Demodulation (RF input)
+
+	uint8_t *user_out;
+	unsigned int rec_len;
+
+	user_out = malloc(mc->k_bch);
+	ret = dvbs2x_demodulate(&demod, input, in_len, user_out, &rec_len);
+
+  input		Complex baseband IQ samples at the configured sps rate.
+		The buffer must contain at least one complete PL frame.
+  in_len	Number of input samples.
+  user_out	Receives decoded user data bits (one bit per byte).
+  rec_len	Receives the number of user bits recovered.
+
+  Returns 0 if LDPC and BCH decoding both succeed, -1 otherwise.
+  On failure, user_out may contain partially decoded (unreliable) data.
+
+  The demodulator performs matched filtering, symbol timing recovery,
+  frame synchronization, carrier recovery, and FEC decoding internally.
+
+
+5. Demodulation (symbol-rate input)
+
+	ret = dvbs2x_demodulate_symbols(&demod, symbols, sym_len,
+					noise_var, user_out, &rec_len);
+
+  symbols	Complex symbols at 1 sample/symbol (post matched filter,
+		post timing recovery).
+  sym_len	Number of input symbols.
+  noise_var	Per-component noise variance estimate.  Pass 0.0 to use
+		the internal estimator (second-difference method).
+  user_out	Receives decoded user data bits.
+  rec_len	Receives the number of user bits recovered.
+
+  This is the symbol-level receiver core.  Use it when timing recovery
+  and matched filtering are handled externally, or for back-to-back
+  simulation without RF impairments.
+
+
+6. MODCOD query
+
+	const struct dvbs2x_modcod *mc;
+
+	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
+
+  Returns a pointer to the MODCOD parameter structure for the given
+  index (1-9), or NULL if the index is out of range.  The structure
+  contains all code parameters (k_bch, fec_len, code_rate, etc.).
+
+  User data capacity per frame:  mc->k_bch - 80  bits.
+
+
+Minimal Example
+---------------
+
+	#include "dvbs2x_vlsnr.h"
+	#include <stdlib.h>
+
+	int main(void)
+	{
+		struct dvbs2x_modulator mod;
+		struct dvbs2x_demodulator demod;
+		const struct dvbs2x_modcod *mc;
+		struct dvbs2x_complex *iq;
+		uint8_t *tx_data, *rx_data;
+		unsigned int tx_bits, out_len, rx_len;
+		unsigned int cap, i;
+
+		/* Select MODCOD 5: BPSK 1/5 spread, -9 dB capable */
+		dvbs2x_modulator_init(&mod, 5, 0.35, 2, 0);
+		dvbs2x_demodulator_init(&demod, 0.35, 2, 0);
+
+		mc = dvbs2x_vlsnr_get_modcod(5);
+		tx_bits = mc->k_bch - 80;
+
+		tx_data = calloc(tx_bits, 1);
+		rx_data = calloc(mc->k_bch, 1);
+		cap = 80000;
+		iq = calloc(cap, sizeof(*iq));
+
+		/* Fill with test pattern */
+		for (i = 0; i < tx_bits; i++)
+			tx_data[i] = i & 1;
+
+		/* Transmit */
+		dvbs2x_modulate(&mod, tx_data, tx_bits, iq, &out_len);
+
+		/* ... channel (add noise, offsets, etc.) ... */
+
+		/* Receive */
+		if (dvbs2x_demodulate(&demod, iq, out_len,
+				      rx_data, &rx_len) == 0)
+			/* rx_data[0..rx_len-1] matches tx_data */
+
+		free(tx_data);
+		free(rx_data);
+		free(iq);
+		return 0;
+	}
+
+Compile:
+
+	gcc -Iinclude -o example example.c -L. -ldvbs2x_vlsnr -lm
+
+
+Test Programs
+-------------
+
+  test_modulator	Unit tests for individual blocks (BCH, LDPC, RRC,
+			PL header, scrambler, modulation).
+
+  test_loopback		Noiseless loopback for all 9 MODCODs at symbol level.
+			Verifies the encode/decode chain produces zero errors.
+
+  test_e2e		End-to-end modulator pipeline check.  Verifies frame
+			lengths and RRC output for all MODCODs.
+
+  test_api_loopback	Public API loopback with configurable impairments.
+			Usage: test_api_loopback [modcod] [esn0] [mode] [seed]
+			       [freq] [phase] [timing]
+			mode 0 = symbol level, mode 1 = full RF.
+
+  test_ber		BER waterfall for a single MODCOD (symbol level).
+			Usage: test_ber [modcod] [frames_per_point]
+
+  test_ber_vlsnr	BER test with puncturing/shortening active.
+			Exercises the native-rate LDPC at low Es/N0.
+
+  test_rf_ber		Full RF chain BER characterization for all 9 MODCODs.
+			Applies timing, frequency, phase offsets and AWGN.
+			Usage: test_rf_ber [modcod] [frames_per_point]
+
+
+Implementation Notes
+--------------------
+
+LDPC Decoder:
+
+  The decoder uses a layered sum-product (belief propagation) schedule
+  with the exact box-plus check-node update.  This recovers approximately
+  2 dB compared to normalized min-sum, which matters at VL-SNR operating
+  points.  LLR values are clamped to +/-40 to prevent numerical overflow.
+  Maximum iterations default to 50 (DVBS2X_LDPC_MAX_ITER).
+
+  The parity-check matrix is stored in Compressed Sparse Row (CSR) format,
+  built from the quasi-cyclic address tables in tables/.
+
+Frame Synchronization:
+
+  The 896-symbol VL-SNR Walsh-Hadamard header is correlated using a
+  segment-coherent algorithm: the header is divided into 128-symbol
+  segments, each correlated coherently, and the segment magnitudes are
+  summed.  This tolerates residual frequency offsets up to approximately
+  1/(4*128) = 2e-3 cycles/symbol during acquisition.
+
+Carrier Recovery:
+
+  Two-stage approach:
+  1. Coarse: Luise-Reggiannini autocorrelation estimator on the WH
+     header, gated by an SNR threshold (disabled below 4 dB estimated
+     Es/N0 to avoid noise-induced drift).
+  2. Fine: weighted linear fit of unwrapped phase measurements from the
+     WH header and all pilot blocks across the frame.  The header
+     anchors the phase; the pilots provide the long baseline for
+     residual frequency estimation.
+
+Timing Recovery:
+
+  Feed-forward Oerder-Meyr (square-and-DFT) estimator with 4-point
+  cubic (Catmull-Rom) interpolation.  This is a non-data-aided,
+  open-loop estimator that works reliably at very low SNR without
+  the symbol-slipping problems of a Gardner timing loop.
+
 
 References
 ----------
 
-ETSI EN 302 307-1 V1.4.1	DVB-S2 base standard
-ETSI EN 302 307-2 V1.3.1	DVB-S2X extensions
-ETSI TR 102 376-1		Implementation guidelines
-ETSI TR 102 376-2		S2X implementation guidelines
+  ETSI EN 302 307-1 V1.4.1	DVB-S2 base standard
+  ETSI EN 302 307-2 V1.3.1	DVB-S2X extensions (VL-SNR in clause 5.5.2)
+  ETSI TR 102 376-1 V1.2.1	DVB-S2 implementation guidelines
+  ETSI TR 102 376-2 V1.2.1	DVB-S2X implementation guidelines
 
-License: GPL-2.0-or-later
+
+License
+-------
+
+GPL-2.0-or-later.  See SPDX headers in each source file.
