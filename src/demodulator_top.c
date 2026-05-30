@@ -387,12 +387,11 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	memcpy(work, input, in_len * sizeof(struct dvbs2x_complex));
 
 	/*
-	 * AFC pre-correction: apply the current multi-frame frequency
-	 * estimate to bring the signal within the frame-sync tolerance.
-	 * This enables acquisition of large offsets that build up over
-	 * multiple frames of coherent accumulation.
+	 * AFC pre-correction: only in streaming mode (ACQUIRE/TRACK).
+	 * In burst mode (state == SEARCH), each frame is independent
+	 * and the per-frame coarse estimator handles the offset.
 	 */
-	if (demod->afc.freq_est != 0.0)
+	if (demod->state != DVBS2X_DEMOD_SEARCH && demod->afc.freq_est != 0.0)
 		derotate(work, 0, in_len, demod->afc.freq_est, 0.0);
 
 	/*
@@ -437,11 +436,12 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 
 	/*
 	 * Multi-frame AFC: update the coherent single-lag accumulator
-	 * from this frame's header.  The AFC estimate is applied as
-	 * pre-correction on the NEXT frame, building up accuracy over
-	 * multiple frames even at very low SNR.
+	 * from this frame's header.  Only active in streaming mode;
+	 * in burst mode the state remains SEARCH and the AFC estimate
+	 * is not applied as pre-correction.
 	 */
-	dvbs2x_afc_update(&demod->afc, work, wh_start, wh_ref);
+	if (demod->state != DVBS2X_DEMOD_SEARCH)
+		dvbs2x_afc_update(&demod->afc, work, wh_start, wh_ref);
 
 	/*
 	 * Single-frame coarse frequency correction (L&R): only applied

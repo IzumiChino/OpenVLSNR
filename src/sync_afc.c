@@ -77,8 +77,25 @@ void dvbs2x_afc_update(struct dvbs2x_afc *afc,
 	afc->acc_q = afc->alpha * afc->acc_q + rq;
 	afc->frames++;
 
-	/* Extract frequency estimate */
-	afc->freq_est = atan2(afc->acc_q, afc->acc_i) / (2.0 * M_PI);
+	/*
+	 * Extract total frequency estimate from the accumulator.
+	 * In streaming mode, the pre-correction removes freq_est
+	 * before this measurement, so the accumulator tracks the
+	 * residual.  We add it to the running estimate.
+	 */
+	if (afc->locked) {
+		/* Tracking: small residual correction */
+		double residual;
+
+		residual = atan2(afc->acc_q, afc->acc_i) / (2.0 * M_PI);
+		afc->freq_est += 0.1 * residual;
+		afc->acc_i = 0.0;
+		afc->acc_q = 0.0;
+	} else {
+		/* Acquisition: full estimate from accumulator */
+		afc->freq_est = atan2(afc->acc_q, afc->acc_i) /
+				(2.0 * M_PI);
+	}
 
 	if (afc->frames >= AFC_LOCK_FRAMES)
 		afc->locked = 1;
