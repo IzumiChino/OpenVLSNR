@@ -68,6 +68,12 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 	return 0;
 }
 
+void dvbs2x_modulator_destroy(struct dvbs2x_modulator *mod)
+{
+	(void)mod;
+	/* All modulator state is inline; nothing to free. */
+}
+
 /*
  * Build the PL frame at symbol rate (no pulse shaping).
  * Returns 0 on success; *sym_len receives the number of symbols.

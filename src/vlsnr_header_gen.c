@@ -191,15 +191,39 @@ void dvbs2x_wh_generate(unsigned int index, int8_t *seq)
 	vlsnr_generate_pattern(index, seq);
 }
 
+/* Reference symbols for frame sync (pre-computed at init) */
+static struct dvbs2x_complex vlsnr_ref[DVBS2X_VLSNR_NUM_MODCODS]
+				      [DVBS2X_VLSNR_WH_LEN];
+static int vlsnr_ref_init;
+
+static void do_sync_init(void)
+{
+	unsigned int mc;
+
+	for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+		int8_t chips[DVBS2X_VLSNR_WH_LEN];
+		unsigned int aidx = modcod_to_annex_i[mc];
+
+		vlsnr_generate_pattern(aidx, chips);
+		chips_to_symbols(chips, DVBS2X_VLSNR_WH_LEN,
+				 vlsnr_ref[mc], 0);
+	}
+	vlsnr_ref_init = 1;
+}
+
+/* Called by dvbs2x_library_init() for thread-safe startup */
+void dvbs2x_vlsnr_sync_init(void)
+{
+	if (!vlsnr_ref_init)
+		do_sync_init();
+}
+
 double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 				unsigned int len,
 				unsigned int seg_len,
 				unsigned int *offset,
 				unsigned int *modcod_idx)
 {
-	static struct dvbs2x_complex ref[DVBS2X_VLSNR_NUM_MODCODS]
-					[DVBS2X_VLSNR_WH_LEN];
-	static int ref_init;
 	double best_corr = -1.0;
 	unsigned int best_offset = 0;
 	unsigned int best_modcod = 1;
@@ -208,18 +232,9 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 	if (seg_len == 0 || seg_len > DVBS2X_VLSNR_WH_LEN)
 		seg_len = DVBS2X_VLSNR_WH_LEN;
 
-	/* Pre-compute reference symbols once (lazy init) */
-	if (!ref_init) {
-		for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
-			int8_t chips[DVBS2X_VLSNR_WH_LEN];
-			unsigned int aidx = modcod_to_annex_i[mc];
-
-			vlsnr_generate_pattern(aidx, chips);
-			chips_to_symbols(chips, DVBS2X_VLSNR_WH_LEN,
-					 ref[mc], 0);
-		}
-		ref_init = 1;
-	}
+	/* Ensure references are initialized (lazy fallback) */
+	if (!vlsnr_ref_init)
+		do_sync_init();
 
 	if (len < DVBS2X_VLSNR_WH_LEN)
 		goto done;
@@ -227,7 +242,7 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 	/* Slide a correlation window over the input */
 	for (pos = 0; pos + DVBS2X_VLSNR_WH_LEN <= len; pos++) {
 		for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
-			const struct dvbs2x_complex *rf = ref[mc];
+			const struct dvbs2x_complex *rf = vlsnr_ref[mc];
 			double seg_mag = 0.0;
 			unsigned int seg_start;
 			double corr;

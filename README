@@ -108,6 +108,19 @@ against libdvbs2x_vlsnr.a and libm.
 All functions return 0 on success, -1 on error unless noted.
 
 
+0. Library initialization
+
+	dvbs2x_library_init();
+
+  Call once at program startup before any other API function.
+  Initializes static lookup tables (LDPC box-plus LUT, VL-SNR
+  header reference sequences).  Thread-safe operation requires
+  this call to complete before spawning worker threads.
+
+  If omitted, tables are initialized lazily on first use (safe
+  for single-threaded programs).
+
+
 1. Initialization
 
 	#include "dvbs2x_vlsnr.h"
@@ -125,8 +138,7 @@ All functions return 0 on success, -1 on error unless noted.
   scrambling_idx  PL scrambling sequence index, 0-7.
 
   The demodulator allocates internal resources (LDPC CSR matrix,
-  working memory).  Call dvbs2x_ldpc_decoder_free(&demod.ldpc_dec)
-  when done, or simply let the process exit.
+  working memory).  Call dvbs2x_demodulator_destroy() when done.
 
 
 2. Modulation (RF output)
@@ -234,11 +246,22 @@ All functions return 0 on success, -1 on error unless noted.
 
 8. Resource cleanup
 
-	dvbs2x_ldpc_decoder_free(&demod.ldpc_dec);
+	dvbs2x_modulator_destroy(&mod);
+	dvbs2x_demodulator_destroy(&demod);
 
-  Releases the cached LDPC parity-check matrix and pre-allocated
-  decoder working memory.  Call when the demodulator is no longer
-  needed.  Safe to call multiple times (idempotent).
+  Releases all resources held by the modulator/demodulator.
+  The demodulator frees the cached LDPC parity-check matrix and
+  pre-allocated decoder working memory.  The modulator destroy
+  is currently a no-op but should be called for forward
+  compatibility.  Both are safe to call multiple times.
+
+
+9. Version query
+
+	printf("libdvbs2x_vlsnr %s\n", dvbs2x_version_string());
+
+  Returns "major.minor.patch" (currently "1.0.0").
+  Compile-time macros: DVBS2X_VERSION_MAJOR/MINOR/PATCH.
 
 
 Minimal Example
@@ -256,6 +279,8 @@ Minimal Example
 		uint8_t *tx_data, *rx_data;
 		unsigned int tx_bits, out_len, rx_len;
 		unsigned int cap, i;
+
+		dvbs2x_library_init();
 
 		dvbs2x_modulator_init(&mod, 5, 0.35, 2, 0);
 		dvbs2x_demodulator_init(&demod, 0.35, 2, 0);
@@ -279,7 +304,8 @@ Minimal Example
 				      rx_data, &rx_len) == 0)
 			/* success */;
 
-		dvbs2x_ldpc_decoder_free(&demod.ldpc_dec);
+		dvbs2x_demodulator_destroy(&demod);
+		dvbs2x_modulator_destroy(&mod);
 		free(tx_data);
 		free(rx_data);
 		free(iq);

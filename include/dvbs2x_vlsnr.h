@@ -3,7 +3,7 @@
  * DVB-S2X VL-SNR Top-Level API
  *
  * Provides the complete modulator and demodulator pipelines
- * for DVB-S2X VL-SNR operation.
+ * for DVB-S2X VL-SNR operation per ETSI EN 302 307-2.
  */
 
 #ifndef DVBS2X_VLSNR_H
@@ -22,6 +22,28 @@
 #include "bb_frame.h"
 #include "filter.h"
 #include "sync.h"
+
+/* Library version */
+#define DVBS2X_VERSION_MAJOR	1
+#define DVBS2X_VERSION_MINOR	0
+#define DVBS2X_VERSION_PATCH	0
+
+/*
+ * dvbs2x_library_init - Initialize library-wide static tables
+ *
+ * Call once before using any other API function.  Initializes the
+ * LDPC box-plus LUT and VL-SNR header reference sequences.  This
+ * function is NOT thread-safe; call it from a single thread at
+ * program startup (analogous to a module_init in the kernel).
+ *
+ * Safe to call multiple times (idempotent).
+ */
+void dvbs2x_library_init(void);
+
+/*
+ * dvbs2x_version_string - Return library version as "major.minor.patch"
+ */
+const char *dvbs2x_version_string(void);
 
 /* Modulator pipeline context */
 struct dvbs2x_modulator {
@@ -79,6 +101,15 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 			  unsigned int pl_scrambling_idx);
 
 /*
+ * dvbs2x_modulator_destroy - Release modulator resources
+ * @mod: modulator context previously initialized with _init
+ *
+ * Currently a no-op (all modulator state is inline), but should
+ * be called for forward compatibility.
+ */
+void dvbs2x_modulator_destroy(struct dvbs2x_modulator *mod);
+
+/*
  * dvbs2x_modulate - Modulate user data into baseband IQ samples
  * @mod: initialized modulator
  * @user_data: input user data bits
@@ -130,6 +161,15 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 			    double rolloff,
 			    unsigned int sps,
 			    unsigned int pl_scrambling_idx);
+
+/*
+ * dvbs2x_demodulator_destroy - Release demodulator resources
+ * @demod: demodulator context previously initialized with _init
+ *
+ * Frees the cached LDPC parity-check matrix and pre-allocated
+ * decoder working memory.  Safe to call multiple times.
+ */
+void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod);
 
 /*
  * dvbs2x_demodulate - Demodulate baseband IQ samples to user data

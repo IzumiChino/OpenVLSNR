@@ -352,6 +352,11 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 	return 0;
 }
 
+void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod)
+{
+	dvbs2x_ldpc_decoder_free(&demod->ldpc_dec);
+}
+
 int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			      const struct dvbs2x_complex *input,
 			      unsigned int in_len,

@@ -42,6 +42,13 @@ static void init_boxplus_lut(void)
 	boxplus_lut_init = 1;
 }
 
+/* Called by dvbs2x_library_init() for thread-safe startup */
+void dvbs2x_ldpc_lut_init(void)
+{
+	if (!boxplus_lut_init)
+		init_boxplus_lut();
+}
+
 static inline double lut_log1pexp(double x)
 {
 	double idx_f, f;
