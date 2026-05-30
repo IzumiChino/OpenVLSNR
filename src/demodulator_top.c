@@ -639,3 +639,136 @@ out:
 	free(symbols);
 	return ret;
 }
+
+/*
+ * Lock management thresholds: consecutive successes to declare TRACK,
+ * consecutive failures to revert to SEARCH.
+ */
+#define LOCK_THRESH	3
+#define LOSS_THRESH	3
+
+int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
+			     const struct dvbs2x_complex *input,
+			     unsigned int in_len,
+			     uint8_t *user_data,
+			     unsigned int *user_len,
+			     unsigned int *consumed)
+{
+	struct dvbs2x_complex *filtered = NULL;
+	struct dvbs2x_complex *symbols = NULL;
+	unsigned int filt_len = 0, sym_len = 0;
+	unsigned int sps = demod->timing.sps;
+	unsigned int need_samples;
+	unsigned int feed_len;
+	int ret;
+
+	*consumed = 0;
+	*user_len = 0;
+
+	/*
+	 * Estimate samples needed for one frame.  In TRACK mode use
+	 * the known frame length; in SEARCH/ACQUIRE use the largest
+	 * possible VL-SNR frame plus acquisition margin.
+	 */
+	if (demod->state == DVBS2X_DEMOD_TRACK &&
+	    demod->expected_frame_len > 0)
+		need_samples = (demod->expected_frame_len + 128) * sps;
+	else
+		need_samples = (DVBS2X_VLSNR_FRAME_LONG +
+				DVBS2X_PLHEADER_LEN +
+				DVBS2X_VLSNR_HDR_LEN + ACQ_WINDOW) * sps;
+
+	if (in_len < need_samples) {
+		*consumed = 0;
+		return -1;
+	}
+
+	/*
+	 * Feed only one frame's worth of samples to the filter to
+	 * avoid processing future frames prematurely.  Add margin
+	 * for the acquisition window and filter transient.
+	 */
+	feed_len = need_samples;
+	if (feed_len > in_len)
+		feed_len = in_len;
+
+	/* Matched filter (persistent state across calls) */
+	filtered = malloc(feed_len * sizeof(struct dvbs2x_complex));
+	if (!filtered)
+		return -1;
+
+	if (!demod->filter_primed) {
+		dvbs2x_rrc_filter_reset(&demod->rx_filter);
+		demod->filter_primed = 1;
+	}
+	dvbs2x_rrc_filter_apply(&demod->rx_filter, input, feed_len,
+				filtered, &filt_len);
+
+	/* Symbol timing recovery (persistent mu across calls) */
+	symbols = malloc((filt_len / sps + 2) *
+			 sizeof(struct dvbs2x_complex));
+	if (!symbols) {
+		free(filtered);
+		return -1;
+	}
+	dvbs2x_timing_sync_process(&demod->timing, filtered, filt_len,
+				   symbols, &sym_len);
+	free(filtered);
+
+	/* Attempt frame decode at symbol level */
+	ret = dvbs2x_demodulate_symbols(demod, symbols, sym_len, 0.0,
+					user_data, user_len);
+	free(symbols);
+
+	/* Update state machine */
+	if (ret == 0) {
+		demod->sync_frames++;
+		demod->frame_count++;
+
+		/* Compute expected frame length for next prediction */
+		if (demod->modcod) {
+			unsigned int tx_sym, dfl;
+
+			frame_geometry(demod->modcod, &tx_sym, &dfl);
+			demod->expected_frame_len =
+				DVBS2X_PLHEADER_LEN +
+				DVBS2X_VLSNR_HDR_LEN + dfl;
+		}
+
+		/* State transitions on success */
+		if (demod->state == DVBS2X_DEMOD_SEARCH)
+			demod->state = DVBS2X_DEMOD_ACQUIRE;
+		if (demod->state == DVBS2X_DEMOD_ACQUIRE &&
+		    demod->sync_frames >= LOCK_THRESH)
+			demod->state = DVBS2X_DEMOD_TRACK;
+	} else {
+		demod->sync_frames = 0;
+
+		/* Revert to SEARCH after consecutive failures */
+		if (demod->state == DVBS2X_DEMOD_TRACK) {
+			demod->frame_count++;
+			if (demod->frame_count >= LOSS_THRESH) {
+				demod->state = DVBS2X_DEMOD_SEARCH;
+				demod->frame_count = 0;
+				dvbs2x_afc_init(&demod->afc, 0.95);
+			}
+		}
+	}
+
+	/*
+	 * Report consumed samples.  Use the known frame length
+	 * (header + data field) converted to sample rate.  Add a
+	 * small margin for the RRC filter group delay on the first
+	 * frame.
+	 */
+	if (demod->expected_frame_len > 0)
+		*consumed = demod->expected_frame_len * sps;
+	else
+		*consumed = (DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN +
+			     16384) * sps;
+
+	if (*consumed > in_len)
+		*consumed = in_len;
+
+	return ret;
+}

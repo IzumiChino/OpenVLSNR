@@ -33,6 +33,13 @@ struct dvbs2x_modulator {
 	struct dvbs2x_rrc_filter	tx_filter;
 };
 
+/* Demodulator sync state machine */
+enum dvbs2x_demod_state {
+	DVBS2X_DEMOD_SEARCH = 0,	/* initial acquisition */
+	DVBS2X_DEMOD_ACQUIRE,		/* AFC accumulating */
+	DVBS2X_DEMOD_TRACK,		/* locked, predicted boundaries */
+};
+
 /* Demodulator pipeline context */
 struct dvbs2x_demodulator {
 	const struct dvbs2x_modcod	*modcod;
@@ -46,8 +53,13 @@ struct dvbs2x_demodulator {
 	struct dvbs2x_ldpc_decoder	ldpc_dec;
 	struct dvbs2x_bch_decoder	bch_dec;
 	struct dvbs2x_bb_frame_ctx	bb_ctx;
+	/* State machine */
+	enum dvbs2x_demod_state		state;
 	unsigned int			sync_frames;
 	unsigned int			frame_count;
+	/* Continuous-mode persistent state */
+	unsigned int			expected_frame_len;
+	int				filter_primed;
 };
 
 /*
@@ -163,5 +175,38 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			      double noise_var,
 			      uint8_t *user_data,
 			      unsigned int *user_len);
+
+/*
+ * dvbs2x_demodulate_stream - Continuous-mode streaming demodulation
+ * @demod: initialized demodulator (state persists across calls)
+ * @input: input IQ samples at configured sps rate
+ * @in_len: number of input samples available
+ * @user_data: output user data bits (one decoded frame)
+ * @user_len: output user data length in bits
+ * @consumed: number of input samples consumed (caller advances)
+ *
+ * Processes a stream of samples, attempting to decode one frame per
+ * call.  The demodulator maintains lock state across calls:
+ *
+ *   SEARCH:  full acquisition window scan, wide timing estimate
+ *   ACQUIRE: AFC accumulating, narrowing frequency estimate
+ *   TRACK:   predicted frame boundaries, persistent timing/carrier
+ *
+ * The caller feeds samples continuously.  On success (return 0),
+ * one frame of user data is output and *consumed indicates how many
+ * input samples were used.  On failure (return -1), *consumed still
+ * indicates samples that were examined (caller should advance).
+ *
+ * The RRC matched filter and timing recovery maintain state across
+ * calls, so the caller should feed contiguous sample streams.
+ *
+ * Returns 0 on successful frame decode, -1 on failure.
+ */
+int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
+			     const struct dvbs2x_complex *input,
+			     unsigned int in_len,
+			     uint8_t *user_data,
+			     unsigned int *user_len,
+			     unsigned int *consumed);
 
 #endif /* DVBS2X_VLSNR_H */
