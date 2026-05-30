@@ -51,6 +51,16 @@ struct dvbs2x_phase_est {
 	int		need_smooth;	/* enable smoothing filter */
 };
 
+/* Multi-frame AFC (Automatic Frequency Control) state */
+struct dvbs2x_afc {
+	double		freq_est;	/* current estimate (cycles/sym) */
+	double		acc_i;		/* coherent single-lag accumulator I */
+	double		acc_q;		/* coherent single-lag accumulator Q */
+	unsigned int	frames;		/* frames accumulated */
+	int		locked;		/* convergence flag */
+	double		alpha;		/* IIR decay factor */
+};
+
 /*
  * dvbs2x_timing_sync_init - Initialize symbol timing recovery
  * @ts: timing sync state
@@ -138,5 +148,28 @@ void dvbs2x_phase_est_process(struct dvbs2x_phase_est *pe,
 			      const struct dvbs2x_complex *ref_pilots,
 			      unsigned int num_pilots,
 			      unsigned int num_symbols);
+
+/*
+ * dvbs2x_afc_init - Initialize multi-frame AFC
+ * @afc: AFC state
+ * @alpha: IIR decay factor (0.9-0.99, higher = more averaging)
+ */
+void dvbs2x_afc_init(struct dvbs2x_afc *afc, double alpha);
+
+/*
+ * dvbs2x_afc_update - Update AFC from WH header correlation
+ * @afc: AFC state
+ * @sym: received symbols (after pre-correction)
+ * @wh_start: header start offset in sym[]
+ * @wh_ref: reference WH symbols (DVBS2X_VLSNR_WH_LEN)
+ *
+ * Computes single-lag correlation on the de-rotated header and
+ * updates the coherent accumulator.  The frequency estimate is
+ * refined after each frame.
+ */
+void dvbs2x_afc_update(struct dvbs2x_afc *afc,
+			const struct dvbs2x_complex *sym,
+			unsigned int wh_start,
+			const struct dvbs2x_complex *wh_ref);
 
 #endif /* DVBS2X_SYNC_H */

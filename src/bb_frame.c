@@ -125,8 +125,11 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	for (i = user_len; i < dfl; i++)
 		bbframe[bit_idx + i] = 0;
 
-	/* Apply BB scrambling to entire frame */
-	bb_scramble(bbframe, ctx->k_bch);
+	/*
+	 * Apply BB scrambling after the shortened prefix.
+	 * The first xs bits must remain zero for LDPC shortening.
+	 */
+	bb_scramble(bbframe + ctx->xs, ctx->k_bch - ctx->xs);
 
 	return 0;
 }
@@ -142,10 +145,10 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 	uint8_t crc;
 	uint16_t dfl;
 
-	/* Copy and descramble */
+	/* Copy and descramble (skip shortened prefix) */
 	for (i = 0; i < ctx->k_bch; i++)
 		descrambled[i] = bbframe[i];
-	bb_scramble(descrambled, ctx->k_bch);
+	bb_scramble(descrambled + ctx->xs, ctx->k_bch - ctx->xs);
 
 	/* Extract header bytes from bits (after xs zero prefix) */
 	bit_idx = ctx->xs;

@@ -36,8 +36,8 @@
 #define DVBS2X_PLS_VLSNR_SET1	129
 #define DVBS2X_PLS_VLSNR_SET2	131
 
-/* Maximum LDPC iterations */
-#define DVBS2X_LDPC_MAX_ITER	50
+/* Maximum LDPC iterations (VL-SNR codes need more at low Es/N0) */
+#define DVBS2X_LDPC_MAX_ITER	200
 
 /* LDPC encoding parallelism factor */
 #define DVBS2X_LDPC_PARALLEL	360

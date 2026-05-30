@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
 	}
 
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
-	user_bits = mc->k_bch - 80;
+	user_bits = mc->k_bch - mc->xs - 80;
 	cap = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN +
 	      mc->fec_len * 2 + mc->fec_len / 16 + 256;
 	cap *= 4;
@@ -150,7 +150,8 @@ int main(int argc, char *argv[])
 	/* Carrier frequency + phase offset */
 	if (f_off != 0.0 || ph_off != 0.0) {
 		for (i = 0; i < out_len; i++) {
-			double a = 2.0 * M_PI * (f_off / fs) * (double)i + ph_off;
+			double a = 2.0 * M_PI * (f_off / fs) *
+				   (double)i + ph_off;
 			double c = cos(a), s = sin(a);
 			double ti = iq[i].i * c - iq[i].q * s;
 			double tq = iq[i].i * s + iq[i].q * c;

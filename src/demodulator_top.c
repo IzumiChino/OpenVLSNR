@@ -343,6 +343,7 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 	dvbs2x_freq_coarse_init(&demod->freq_coarse, 1e-4);
 	dvbs2x_freq_fine_init(&demod->freq_fine, 4);
 	dvbs2x_phase_est_init(&demod->phase, 0.3, 1);
+	dvbs2x_afc_init(&demod->afc, 0.95);
 	dvbs2x_scrambler_init(&demod->descrambler, pl_scrambling_idx);
 
 	demod->sync_frames = 0;
@@ -386,6 +387,15 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	memcpy(work, input, in_len * sizeof(struct dvbs2x_complex));
 
 	/*
+	 * AFC pre-correction: apply the current multi-frame frequency
+	 * estimate to bring the signal within the frame-sync tolerance.
+	 * This enables acquisition of large offsets that build up over
+	 * multiple frames of coherent accumulation.
+	 */
+	if (demod->afc.freq_est != 0.0)
+		derotate(work, 0, in_len, demod->afc.freq_est, 0.0);
+
+	/*
 	 * Frame sync via Walsh-Hadamard correlation, bounded to the
 	 * acquisition window (the header read still extends past it).
 	 */
@@ -425,6 +435,19 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 		fprintf(stderr, "[dbg] nv_est=%.4f esn0_est=%.2f dB\n",
 			nv_est, esn0_db);
 
+	/*
+	 * Multi-frame AFC: update the coherent single-lag accumulator
+	 * from this frame's header.  The AFC estimate is applied as
+	 * pre-correction on the NEXT frame, building up accuracy over
+	 * multiple frames even at very low SNR.
+	 */
+	dvbs2x_afc_update(&demod->afc, work, wh_start, wh_ref);
+
+	/*
+	 * Single-frame coarse frequency correction (L&R): only applied
+	 * at high SNR where a single header gives a reliable estimate.
+	 * At low SNR the AFC pre-correction + residual tracker suffice.
+	 */
 	coarse_freq_recover(work, wh_start,
 			    DVBS2X_VLSNR_WH_LEN + data_field_len, wh_ref,
 			    esn0_db);

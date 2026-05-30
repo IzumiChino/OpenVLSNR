@@ -41,6 +41,7 @@ struct dvbs2x_demodulator {
 	struct dvbs2x_freq_coarse	freq_coarse;
 	struct dvbs2x_freq_fine		freq_fine;
 	struct dvbs2x_phase_est		phase;
+	struct dvbs2x_afc		afc;
 	struct dvbs2x_scrambler		descrambler;
 	struct dvbs2x_ldpc_decoder	ldpc_dec;
 	struct dvbs2x_bch_decoder	bch_dec;
