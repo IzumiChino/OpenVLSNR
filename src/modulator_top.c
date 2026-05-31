@@ -37,7 +37,7 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
 	if (!mc)
-		return -1;
+		return DVBS2X_ERR_PARAM;
 
 	mod->cfg.modcod = mc;
 	mod->cfg.rolloff = rolloff;
@@ -50,12 +50,12 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 	/* Initialize BCH encoder */
 	ret = dvbs2x_bch_encoder_init(&mod->bch_enc, mc);
 	if (ret < 0)
-		return -1;
+		return DVBS2X_ERR_PARAM;
 
 	/* Initialize LDPC encoder */
 	ret = dvbs2x_ldpc_encoder_init(&mod->ldpc_enc, mc);
 	if (ret < 0)
-		return -1;
+		return DVBS2X_ERR_PARAM;
 
 	/* Initialize scrambler */
 	dvbs2x_scrambler_init(&mod->scrambler, pl_scrambling_idx);
@@ -63,7 +63,7 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 	/* Initialize TX filter */
 	ret = dvbs2x_rrc_filter_init(&mod->tx_filter, rolloff, sps, 16);
 	if (ret < 0)
-		return -1;
+		return DVBS2X_ERR_PARAM;
 
 	return 0;
 }
@@ -98,7 +98,7 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	unsigned int hdr_len;
 	unsigned int pilot_len;
 	unsigned int i, p_idx, t_idx;
-	int ret = -1;
+	int ret = DVBS2X_ERR_NOMEM;
 
 	hdr_len = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN;
 	tx_coded = dvbs2x_tx_coded_bits(mc);
@@ -113,18 +113,24 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 
 	/* BB frame -> BCH -> LDPC */
 	if (dvbs2x_bb_frame_build(&mod->bb_ctx, user_data, user_len,
-				  bbframe) < 0)
+				  bbframe) < 0) {
+		ret = DVBS2X_ERR_PARAM;
 		goto out;
-	if (dvbs2x_bch_encode(&mod->bch_enc, bbframe, bch_out) < 0)
+	}
+	if (dvbs2x_bch_encode(&mod->bch_enc, bbframe, bch_out) < 0) {
+		ret = DVBS2X_ERR_PARAM;
 		goto out;
+	}
 
 	/*
 	 * LDPC encode.  The BB frame has xs zero bits prepended
 	 * (shortening), so the BCH codeword's first xs positions
-	 * are zero — matching the LDPC shortening requirement.
+	 * are zero, matching the LDPC shortening requirement.
 	 */
-	if (dvbs2x_ldpc_encode(&mod->ldpc_enc, bch_out, ldpc_cw) < 0)
+	if (dvbs2x_ldpc_encode(&mod->ldpc_enc, bch_out, ldpc_cw) < 0) {
+		ret = DVBS2X_ERR_PARAM;
 		goto out;
+	}
 
 	/*
 	 * Apply shortening and puncturing to produce tx_bits:
@@ -194,7 +200,7 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	dvbs2x_scramble(&mod->scrambler, symbols + hdr_len, pilot_len);
 
 	*sym_len = hdr_len + pilot_len;
-	ret = 0;
+	ret = DVBS2X_OK;
 
 out:
 	free(bbframe);
@@ -218,7 +224,7 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 	unsigned int frame_cap;
 	unsigned int frame_len = 0;
 	unsigned int rrc_out_len;
-	int ret = -1;
+	int ret = DVBS2X_ERR_NOMEM;
 
 	/*
 	 * Worst-case frame size: header + all transmitted symbols
@@ -233,8 +239,9 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 	if (!frame)
 		goto out;
 
-	if (dvbs2x_modulate_symbols(mod, user_data, user_len,
-				    frame, &frame_len) < 0)
+	ret = dvbs2x_modulate_symbols(mod, user_data, user_len,
+				      frame, &frame_len);
+	if (ret < 0)
 		goto out;
 
 	/* RRC pulse shaping (upsample by sps) */
@@ -243,7 +250,7 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 			    output, &rrc_out_len);
 
 	*out_len = rrc_out_len;
-	ret = 0;
+	ret = DVBS2X_OK;
 
 out:
 	free(frame);

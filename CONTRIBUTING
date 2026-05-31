@@ -1,0 +1,129 @@
+Contributing to libdvbs2x_vlsnr
+===============================
+
+This is a small C11 library that depends only on the C library and
+libm.  The rules below keep the tree consistent.  Please read them
+before sending a change.
+
+Everything in the tree is written in English and in ASCII.  Do not add
+any non-ASCII byte: no typographic quotes, no long dashes, no accented
+letters, no arrows.  Where you might reach for such a character, write
+the plain form instead: a hyphen "-", straight quotes, "->" for an
+arrow, and "x" for a multiplication sign.
+
+
+Building and testing
+--------------------
+
+	make		build the static library
+	make test	build and run the test programs
+	make clean	remove the build products
+
+A change must build with no warnings under the flags already set in the
+Makefile (-Wall -Wextra -Werror), and "make test" must pass, before you
+submit it.
+
+
+Coding style
+------------
+
+Indent with tabs, one tab per level, and treat a tab as eight columns.
+Do not indent with spaces.  Spaces are allowed only to align text that
+follows the leading tabs, such as the arguments of a call that spills
+onto a second line.
+
+Keep a line within 80 columns.  When a statement does not fit, break it
+and line the continuation up under the opening parenthesis.
+
+Put the opening brace of a function on its own line.  Everywhere else
+the opening brace stays on the line that starts the block, with one
+space in front of it:
+
+	int dvbs2x_example(int n)
+	{
+		if (n < 0) {
+			handle();
+			return DVBS2X_ERR_PARAM;
+		}
+
+		return 0;
+	}
+
+The closing brace goes on its own line, in the column of the statement
+that opened the block.  Keep "else", and the "while" of a do/while
+loop, on the same line as the brace that precedes it.
+
+Leave the braces off a block that holds a single statement.  If one arm
+of an if/else needs braces, put braces on both arms.
+
+Put a space after "if", "for", "while", "switch", and "return".  Put no
+space between a function name and the "(" that follows it.  Put a space
+on each side of a binary operator, and none after a unary operator or a
+cast.  Do not pad the inside of "(" or "[".
+
+Bind the "*" of a pointer to the name, not the type: write
+"struct foo *bar", never "struct foo* bar".
+
+Name functions, variables, and structure members in lower case with
+underscores between words.  Do not use mixed case.  Write macros and
+enumeration constants in upper case.  Prefix every name the library
+exports with "dvbs2x_".
+
+Name a structure type as "struct thing" and use it that way; do not put
+a structure or a pointer behind a typedef.  Use the fixed-width types
+from <stdint.h> for data with a defined bit width.  Mark a pointer
+parameter "const" when the function does not write through it.
+
+Declare the variables of a block at its top, ahead of the first
+statement.
+
+Use /* ... */ for comments.  The // form appears only on the SPDX line
+at the very top of a .c file.  A comment that spans lines opens with /*
+on its own line and begins each later line with " * ".  Start every
+source file with an SPDX license identifier and one line that says what
+the file holds.  Comment the reasoning behind code that is not obvious;
+do not narrate code that speaks for itself.
+
+Keep a function short and give it one job.  Return 0 (DVBS2X_OK) on
+success and a negative DVBS2X_ERR_* code on failure.  On an error path,
+jump with "goto" to a single cleanup block at the end of the function
+and release resources in the reverse of the order you took them.
+
+
+Commit messages
+---------------
+
+Put one logical change in each commit.  Do not mix unrelated edits, and
+do not spread a single change across several commits.
+
+The first line is the summary.  Begin it with "dvbs2x-vlsnr: ", then a
+short description in the imperative mood and in lower case, with no full
+stop at the end.  Keep the whole line under about 75 columns:
+
+	dvbs2x-vlsnr: return error codes from the public API
+
+Leave the second line blank.  After it write the body: state the
+problem first, then what the change does and why.  Use plain
+present-tense sentences and wrap them at 72 columns.
+
+Sign every commit.  Commit with "git commit -s", which adds the line:
+
+	Signed-off-by: Your Name <you@example.com>
+
+The sign-off states that you wrote the change, or otherwise have the
+right to submit it under the library's license, GPL-2.0-or-later; this
+is the Developer Certificate of Origin.  Add no other trailers unless
+they apply.
+
+A full example:
+
+	dvbs2x-vlsnr: fix q_ldpc for the short-frame codes
+
+	MODCODs 5, 7, and 9 reused the normal-frame circulant size.  The
+	quasi-cyclic parity-check addressing was then wrong and the codes
+	had no coding gain.
+
+	Set q_ldpc to (fec_len - k_ldpc) / 360 for every code so the
+	decoder walks the matrix correctly.
+
+	Signed-off-by: Your Name <you@example.com>

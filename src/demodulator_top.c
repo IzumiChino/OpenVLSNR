@@ -334,10 +334,10 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 	demod->modcod = NULL;	/* determined after frame sync */
 
 	if (sps < 2)
-		return -1;
+		return DVBS2X_ERR_PARAM;
 
 	if (dvbs2x_rrc_filter_init(&demod->rx_filter, rolloff, sps, 16) < 0)
-		return -1;
+		return DVBS2X_ERR_PARAM;
 
 	dvbs2x_timing_sync_init(&demod->timing, sps, 1e-3);
 	dvbs2x_freq_coarse_init(&demod->freq_coarse, 1e-4);
@@ -380,15 +380,15 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	unsigned int ndata, num_mod_sym;
 	unsigned int iter_used;
 	double conf, demap_nv, nv_est, esn0_db;
-	int ret = -1;
+	int ret = DVBS2X_ERR_FEC;
 
 	if (in_len < DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN)
-		return -1;
+		return DVBS2X_ERR_SHORT;
 
 	/* Mutable copy: carrier recovery / descrambling work in place */
 	work = malloc(in_len * sizeof(struct dvbs2x_complex));
 	if (!work)
-		return -1;
+		return DVBS2X_ERR_NOMEM;
 	memcpy(work, input, in_len * sizeof(struct dvbs2x_complex));
 
 	/*
@@ -408,11 +408,15 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 		search_len = ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN;
 	conf = dvbs2x_vlsnr_header_sync(work, search_len, SYNC_SEG_LEN,
 					&wh_start, &modcod_idx);
-	if (conf < 0.05)
+	if (conf < 0.05) {
+		ret = DVBS2X_ERR_NOSYNC;
 		goto out;
+	}
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
-	if (!mc)
+	if (!mc) {
+		ret = DVBS2X_ERR_NOSYNC;
 		goto out;
+	}
 	demod->modcod = mc;
 
 	frame_geometry(mc, &num_tx_sym, &data_field_len);
@@ -423,13 +427,17 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			"dfl=%u in_len=%u\n",
 			wh_start, modcod_idx, conf, num_tx_sym,
 			data_field_len, in_len);
-	if (data_start + data_field_len > in_len)
+	if (data_start + data_field_len > in_len) {
+		ret = DVBS2X_ERR_SHORT;
 		goto out;
+	}
 
 	/* Carrier recovery */
 	wh_ref = malloc(DVBS2X_VLSNR_HDR_LEN * sizeof(struct dvbs2x_complex));
-	if (!wh_ref)
+	if (!wh_ref) {
+		ret = DVBS2X_ERR_NOMEM;
 		goto out;
+	}
 	dvbs2x_vlsnr_header_generate(mc, wh_ref);
 
 	/* Estimate noise/SNR from the header (robust to small offsets) */
@@ -471,8 +479,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	data_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
 	pilots = malloc((data_field_len - num_tx_sym + 1) *
 			sizeof(struct dvbs2x_complex));
-	if (!data_sym || !pilots)
+	if (!data_sym || !pilots) {
+		ret = DVBS2X_ERR_NOMEM;
 		goto out;
+	}
 
 	ndata = dvbs2x_pilot_extract(work + data_start, data_field_len,
 				     data_sym, pilots, mc);
@@ -482,8 +492,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 		unsigned int dl = ndata / 2;
 
 		despread = malloc(dl * sizeof(struct dvbs2x_complex));
-		if (!despread)
+		if (!despread) {
+			ret = DVBS2X_ERR_NOMEM;
 			goto out;
+		}
 		dvbs2x_demod_despread(data_sym, despread, dl);
 		num_mod_sym = dl;
 	} else {
@@ -502,8 +514,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 
 		llr = malloc(tx_coded * sizeof(double));
 		deint = malloc(mc->fec_len * sizeof(double));
-		if (!llr || !deint)
+		if (!llr || !deint) {
+			ret = DVBS2X_ERR_NOMEM;
 			goto out;
+		}
 
 		if (mc->modulation == DVBS2X_MOD_QPSK)
 			dvbs2x_demod_qpsk(despread, llr,
@@ -533,8 +547,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			unsigned int i, p_idx, d_idx;
 
 			full_llr = malloc(mc->fec_len * sizeof(double));
-			if (!full_llr)
+			if (!full_llr) {
+				ret = DVBS2X_ERR_NOMEM;
 				goto out;
+			}
 
 			/* Shortened positions: known zero */
 			for (i = 0; i < mc->xs; i++)
@@ -570,31 +586,44 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	    demod->ldpc_dec.code.k != mc->k_ldpc) {
 		dvbs2x_ldpc_decoder_free(&demod->ldpc_dec);
 		if (dvbs2x_ldpc_decoder_init(&demod->ldpc_dec, mc,
-					     DVBS2X_LDPC_MAX_ITER) < 0)
+					     DVBS2X_LDPC_MAX_ITER) < 0) {
+			ret = DVBS2X_ERR_NOMEM;
 			goto out;
+		}
 	}
 	ldpc_out = malloc(mc->k_ldpc);
-	if (!ldpc_out)
+	if (!ldpc_out) {
+		ret = DVBS2X_ERR_NOMEM;
 		goto out;
+	}
 	dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out, &iter_used);
 
 	/*
 	 * BCH decode: the LDPC info word includes the xs zero prefix.
 	 * The full k_ldpc = n_bch bits form the BCH codeword.
 	 */
-	if (dvbs2x_bch_decoder_init(&demod->bch_dec, mc) < 0)
+	if (dvbs2x_bch_decoder_init(&demod->bch_dec, mc) < 0) {
+		ret = DVBS2X_ERR_NOMEM;
 		goto out;
+	}
 	bch_cw = malloc(mc->n_bch);
-	if (!bch_cw)
+	if (!bch_cw) {
+		ret = DVBS2X_ERR_NOMEM;
 		goto out;
+	}
 	memcpy(bch_cw, ldpc_out, mc->n_bch);
-	if (dvbs2x_bch_decode(&demod->bch_dec, bch_cw) < 0)
+	if (dvbs2x_bch_decode(&demod->bch_dec, bch_cw) < 0) {
+		ret = DVBS2X_ERR_CRC;
 		goto out;
+	}
 
 	/* BB frame parse */
 	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_TS);
-	ret = dvbs2x_bb_frame_parse(&demod->bb_ctx, bch_cw,
-				    user_data, user_len);
+	if (dvbs2x_bb_frame_parse(&demod->bb_ctx, bch_cw,
+				  user_data, user_len) < 0)
+		ret = DVBS2X_ERR_CRC;
+	else
+		ret = DVBS2X_OK;
 
 out:
 	free(work);
@@ -618,7 +647,7 @@ int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 	struct dvbs2x_complex *filtered = NULL;
 	struct dvbs2x_complex *symbols = NULL;
 	unsigned int filt_len = 0, sym_len = 0;
-	int ret = -1;
+	int ret = DVBS2X_ERR_NOMEM;
 
 	/* Matched filter */
 	filtered = malloc(in_len * sizeof(struct dvbs2x_complex));
@@ -686,7 +715,7 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 
 	if (in_len < need_samples) {
 		*consumed = 0;
-		return -1;
+		return DVBS2X_ERR_SHORT;
 	}
 
 	/*
@@ -701,7 +730,7 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 	/* Matched filter (persistent state across calls) */
 	filtered = malloc(feed_len * sizeof(struct dvbs2x_complex));
 	if (!filtered)
-		return -1;
+		return DVBS2X_ERR_NOMEM;
 
 	if (!demod->filter_primed) {
 		dvbs2x_rrc_filter_reset(&demod->rx_filter);
@@ -715,7 +744,7 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			 sizeof(struct dvbs2x_complex));
 	if (!symbols) {
 		free(filtered);
-		return -1;
+		return DVBS2X_ERR_NOMEM;
 	}
 	dvbs2x_timing_sync_process(&demod->timing, filtered, filt_len,
 				   symbols, &sym_len);

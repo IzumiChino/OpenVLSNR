@@ -11,6 +11,15 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Error codes (all API functions return 0 on success, negative on error) */
+#define DVBS2X_OK		0
+#define DVBS2X_ERR_NOMEM	(-1)	/* memory allocation failed */
+#define DVBS2X_ERR_PARAM	(-2)	/* invalid parameter */
+#define DVBS2X_ERR_NOSYNC	(-3)	/* frame sync failed */
+#define DVBS2X_ERR_FEC		(-4)	/* LDPC did not converge */
+#define DVBS2X_ERR_CRC		(-5)	/* BCH or BB frame CRC failure */
+#define DVBS2X_ERR_SHORT	(-6)	/* input too short */
+
 /* Frame lengths (LDPC codeword bits) */
 #define DVBS2X_LDPC_NORMAL	64800
 #define DVBS2X_LDPC_MEDIUM	32400

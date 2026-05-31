@@ -92,7 +92,7 @@ struct dvbs2x_demodulator {
  * @sps: samples per symbol (e.g. 2)
  * @pl_scrambling_idx: PL scrambling index (0-7)
  *
- * Returns 0 on success, -1 on error.
+ * Returns 0 on success, a negative DVBS2X_ERR_* code on failure.
  */
 int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 			  unsigned int modcod_idx,
@@ -120,7 +120,7 @@ void dvbs2x_modulator_destroy(struct dvbs2x_modulator *mod);
  * Performs the complete chain: BB frame -> BCH -> LDPC -> interleave ->
  * modulate -> PL frame build -> scramble -> pulse shape.
  *
- * Returns 0 on success, -1 on error.
+ * Returns 0 on success, a negative DVBS2X_ERR_* code on failure.
  */
 int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 		    const uint8_t *user_data,
@@ -140,7 +140,7 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
  * symbol-rate PL frame.  The output buffer must hold at least
  * PLHEADER + VLSNR header + fec_len*2 + fec_len/360 + 64 symbols.
  *
- * Returns 0 on success, -1 on error.
+ * Returns 0 on success, a negative DVBS2X_ERR_* code on failure.
  */
 int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 			    const uint8_t *user_data,
@@ -155,7 +155,7 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
  * @sps: samples per symbol
  * @pl_scrambling_idx: PL scrambling index
  *
- * Returns 0 on success, -1 on error.
+ * Returns 0 on success, a negative DVBS2X_ERR_* code on failure.
  */
 int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 			    double rolloff,
@@ -182,7 +182,7 @@ void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod);
  * Performs: matched filter -> sync -> descramble -> demap ->
  * deinterleave -> LDPC decode -> BCH decode -> BB frame parse.
  *
- * Returns 0 on success, -1 on decode failure.
+ * Returns 0 on success, a negative DVBS2X_ERR_* code on failure.
  */
 int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 		      const struct dvbs2x_complex *input,
@@ -207,7 +207,7 @@ int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
  * matched filtering and timing recovery.  Exposed for testing the
  * receiver independently of the RF front-end.
  *
- * Returns 0 on success, -1 on decode failure.
+ * Returns 0 on success, a negative DVBS2X_ERR_* code on failure.
  */
 int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			      const struct dvbs2x_complex *input,
@@ -240,7 +240,8 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
  * The RRC matched filter and timing recovery maintain state across
  * calls, so the caller should feed contiguous sample streams.
  *
- * Returns 0 on successful frame decode, -1 on failure.
+ * Returns 0 on a successful frame decode, a negative DVBS2X_ERR_*
+ * code on failure.
  */
 int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			     const struct dvbs2x_complex *input,

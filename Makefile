@@ -8,6 +8,16 @@ CFLAGS		= -Wall -Wextra -Werror -std=c11 -O2
 CFLAGS		+= -Iinclude
 LDFLAGS		= -lm
 
+# Install paths (override on the command line, e.g. make install PREFIX=/usr)
+PREFIX		?= /usr/local
+libdir		= $(PREFIX)/lib
+includedir	= $(PREFIX)/include
+pkgincludedir	= $(includedir)/dvbs2x
+HEADERS		= $(wildcard include/*.h)
+
+INSTALL		= install
+INSTALL_DATA	= $(INSTALL) -m 644
+
 # Debug build
 ifdef DEBUG
 CFLAGS		+= -g -O0 -DDEBUG
@@ -34,7 +44,7 @@ LIB		= libdvbs2x_vlsnr.a
 # Test binaries
 TESTS		= $(TEST_SRCS:$(TESTDIR)/%.c=$(TESTDIR)/%)
 
-.PHONY: all clean test
+.PHONY: all clean test install uninstall
 
 all: $(LIB)
 
@@ -61,3 +71,13 @@ $(TESTDIR)/%: $(TESTDIR)/%.c $(LIB)
 clean:
 	rm -f $(ALL_OBJS) $(LIB) $(TESTS)
 	rm -f $(TESTDIR)/*.o
+
+install: $(LIB)
+	$(INSTALL) -d $(DESTDIR)$(libdir)
+	$(INSTALL_DATA) $(LIB) $(DESTDIR)$(libdir)/
+	$(INSTALL) -d $(DESTDIR)$(pkgincludedir)
+	$(INSTALL_DATA) $(HEADERS) $(DESTDIR)$(pkgincludedir)/
+
+uninstall:
+	rm -f $(DESTDIR)$(libdir)/$(LIB)
+	rm -rf $(DESTDIR)$(pkgincludedir)
