@@ -250,6 +250,7 @@ static double test_ber_vlsnr(unsigned int modcod_idx, double esn0_db,
 	}
 
 	free(punct_pattern);
+	dvbs2x_ldpc_decoder_free(&ldpc_dec);
 
 	if (total_bits == 0)
 		return -1.0;

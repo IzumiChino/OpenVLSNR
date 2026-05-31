@@ -12,6 +12,7 @@ test/test_loopback
 test/test_modulator
 test/test_rf_ber
 test/test_stream
+test/test_fuzz
 
 # Editor
 *.swp

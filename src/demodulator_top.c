@@ -421,12 +421,13 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 
 	frame_geometry(mc, &num_tx_sym, &data_field_len);
 	data_start = wh_start + DVBS2X_VLSNR_WH_LEN + 2;
-	if (getenv("DVBS2X_DEBUG"))
-		fprintf(stderr,
-			"[dbg] wh_start=%u modcod=%u conf=%.3f tx_sym=%u "
-			"dfl=%u in_len=%u\n",
-			wh_start, modcod_idx, conf, num_tx_sym,
-			data_field_len, in_len);
+#ifdef DEBUG
+	fprintf(stderr,
+		"[dbg] wh_start=%u modcod=%u conf=%.3f tx_sym=%u "
+		"dfl=%u in_len=%u\n",
+		wh_start, modcod_idx, conf, num_tx_sym,
+		data_field_len, in_len);
+#endif
 	if (data_start + data_field_len > in_len) {
 		ret = DVBS2X_ERR_SHORT;
 		goto out;
@@ -443,9 +444,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	/* Estimate noise/SNR from the header (robust to small offsets) */
 	nv_est = estimate_noise_var(work, wh_start, wh_ref + 2);
 	esn0_db = 10.0 * log10(1.0 / (2.0 * nv_est + 1e-12));
-	if (getenv("DVBS2X_DEBUG"))
-		fprintf(stderr, "[dbg] nv_est=%.4f esn0_est=%.2f dB\n",
-			nv_est, esn0_db);
+#ifdef DEBUG
+	fprintf(stderr, "[dbg] nv_est=%.4f esn0_est=%.2f dB\n",
+		nv_est, esn0_db);
+#endif
 
 	/*
 	 * Multi-frame AFC: update the coherent single-lag accumulator

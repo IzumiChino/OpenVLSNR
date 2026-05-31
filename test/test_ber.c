@@ -195,6 +195,7 @@ out:
 	free(deinterleaved);
 	free(ldpc_decoded);
 	free(bch_decoded);
+	dvbs2x_ldpc_decoder_free(&ldpc_dec);
 
 	if (total_bits == 0)
 		return -1.0;

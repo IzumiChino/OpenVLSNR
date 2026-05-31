@@ -165,5 +165,7 @@ int main(int argc, char *argv[])
 	free(stream);
 	free(tx_data);
 	free(rx_data);
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_modulator_destroy(&mod);
 	return (decoded >= num_frames - 1) ? 0 : 1;
 }

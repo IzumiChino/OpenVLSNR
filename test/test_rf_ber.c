@@ -157,6 +157,8 @@ static void run_point(const struct dvbs2x_modcod *mc, unsigned int idx,
 	free(uin);
 	free(uout);
 	free(iq);
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_modulator_destroy(&mod);
 }
 
 int main(int argc, char *argv[])

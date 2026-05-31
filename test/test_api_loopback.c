@@ -188,5 +188,7 @@ int main(int argc, char *argv[])
 	free(user_in);
 	free(user_out);
 	free(iq);
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_modulator_destroy(&mod);
 	return ok ? 0 : 1;
 }
