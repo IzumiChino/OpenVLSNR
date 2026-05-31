@@ -160,7 +160,8 @@ static double test_ber_vlsnr(unsigned int modcod_idx, double esn0_db,
 			/* Parity bits (skip punctured) */
 			for (i = 0; i < m; i++) {
 				if (!punct_pattern[i])
-					tx_bits[idx++] = codeword[mc->k_ldpc + i];
+					tx_bits[idx++] =
+						codeword[mc->k_ldpc + i];
 			}
 
 			dvbs2x_mod_pi2bpsk(tx_bits, tx_sym, num_data_sym);

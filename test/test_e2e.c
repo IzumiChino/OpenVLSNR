@@ -72,6 +72,7 @@ static void test_modulator_pipeline(unsigned int modcod_idx)
 
 	free(user_data);
 	free(output);
+	dvbs2x_modulator_destroy(&mod);
 }
 
 int main(void)
