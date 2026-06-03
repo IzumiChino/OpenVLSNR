@@ -1,0 +1,10 @@
+prefix=@PREFIX@
+exec_prefix=${prefix}
+libdir=${exec_prefix}/lib
+includedir=${prefix}/include
+
+Name: libdvbs2x_vlsnr
+Description: DVB-S2X VL-SNR modulator and demodulator library
+Version: @VERSION@
+Libs: -L${libdir} -ldvbs2x_vlsnr -lm
+Cflags: -I${includedir}/dvbs2x

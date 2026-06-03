@@ -3,6 +3,9 @@
 *.a
 *.so
 
+# pkg-config generated file
+dvbs2x_vlsnr.pc
+
 # Test binaries
 test/test_api_loopback
 test/test_ber
