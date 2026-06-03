@@ -38,7 +38,7 @@ static void test_modcod_table(void)
 		assert(mc->fec_len == 64800 || mc->fec_len == 32400 ||
 		       mc->fec_len == 16200);
 		assert(mc->k_bch < mc->n_bch);
-		assert(mc->n_bch == mc->k_ldpc);
+		assert(mc->k_ldpc == mc->xs + mc->n_bch);
 		assert(mc->k_ldpc < mc->fec_len);
 	}
 

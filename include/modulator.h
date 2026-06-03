@@ -20,8 +20,9 @@
  * @symbols: output complex symbols
  * @len: number of bits (= number of symbols)
  *
- * Mapping: bit 0 -> +1, bit 1 -> -1, then rotate by n*pi/2
- * where n is the symbol index.
+ * Period-2 diagonal mapping (gr-dtv m_bpsk[i & 1][b]):
+ *   even index: bit 0 -> (+,+)/sqrt2, bit 1 -> (-,-)/sqrt2
+ *   odd  index: bit 0 -> (-,+)/sqrt2, bit 1 -> (+,-)/sqrt2
  */
 void dvbs2x_mod_pi2bpsk(const uint8_t *bits,
 			struct dvbs2x_complex *symbols,
@@ -44,16 +45,16 @@ void dvbs2x_mod_qpsk(const uint8_t *bits,
 		     unsigned int num_symbols);
 
 /*
- * dvbs2x_mod_spread - Apply symbol spreading (factor 2)
- * @in: input symbols
- * @out: output symbols (length = 2 * in_len)
- * @in_len: number of input symbols
+ * dvbs2x_mod_spread_bits - Apply spreading factor 2 at the bit level
+ * @in: input coded bits
+ * @out: output bits (length = 2 * in_len)
+ * @in_len: number of input bits
  *
- * Each input symbol is repeated twice in the output.
+ * Duplicates each coded bit before pi/2-BPSK mapping; the two copies
+ * map to the even and odd diagonals (ETSI EN 302 307-2).
  */
-void dvbs2x_mod_spread(const struct dvbs2x_complex *in,
-		       struct dvbs2x_complex *out,
-		       unsigned int in_len);
+void dvbs2x_mod_spread_bits(const uint8_t *in, uint8_t *out,
+			    unsigned int in_len);
 
 /*
  * dvbs2x_demod_pi2bpsk - Compute LLRs for pi/2-BPSK symbols
@@ -78,13 +79,15 @@ void dvbs2x_demod_qpsk(const struct dvbs2x_complex *symbols,
 			double noise_var);
 
 /*
- * dvbs2x_demod_despread - Combine spread symbols (factor 2)
- * @in: input symbols (2 * out_len)
- * @out: output combined symbols
- * @out_len: number of output symbols
+ * dvbs2x_demod_despread_llr - Combine spread LLRs (factor 2)
+ * @in: input LLRs (2 * out_len), one per received symbol
+ * @out: output combined LLRs
+ * @out_len: number of output (coded-bit) LLRs
+ *
+ * Combines LLRs from the two symbols of each spread pair (same coded
+ * bit) by summing them (maximum-likelihood combine).
  */
-void dvbs2x_demod_despread(const struct dvbs2x_complex *in,
-			   struct dvbs2x_complex *out,
-			   unsigned int out_len);
+void dvbs2x_demod_despread_llr(const double *in, double *out,
+			       unsigned int out_len);
 
 #endif /* DVBS2X_MODULATOR_H */

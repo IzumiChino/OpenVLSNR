@@ -22,14 +22,24 @@
 #define DVBS2X_STREAM_TS	0	/* Transport Stream */
 #define DVBS2X_STREAM_GS	1	/* Generic Stream */
 
+/* MATYPE-1 roll-off field (bits 1:0) per ETSI EN 302 307-1 Table 2 */
+#define DVBS2X_RO_0_35	0
+#define DVBS2X_RO_0_25	1
+#define DVBS2X_RO_0_20	2
+
 /* BB frame context */
 struct dvbs2x_bb_frame_ctx {
-	unsigned int	k_bch;		/* total BCH input capacity (bits) */
-	unsigned int	xs;		/* shortening zero-prefix length */
+	unsigned int	k_bch;		/* BCH input capacity = BB frame bits */
 	unsigned int	stream_type;
 	uint16_t	upl;		/* user packet length */
 	uint16_t	dfl;		/* data field length */
+	uint8_t		ro;		/* MATYPE-1 roll-off code (TX) */
 };
+
+/*
+ * dvbs2x_ro_from_rolloff - Map a roll-off factor to its MATYPE-1 RO code
+ */
+uint8_t dvbs2x_ro_from_rolloff(double rolloff);
 
 /*
  * dvbs2x_bb_frame_init - Initialize BB frame context

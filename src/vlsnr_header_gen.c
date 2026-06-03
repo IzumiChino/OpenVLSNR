@@ -113,36 +113,29 @@ static void vlsnr_generate_pattern(unsigned int annex_idx,
 }
 
 /*
- * Map a +/-1 chip sequence to pi/2-BPSK symbols.
- * chip[n] -> chip[n] * exp(j * n * pi/2)
+ * Map a +/-1 chip sequence to period-2 pi/2-BPSK symbols, matching the
+ * gr-dtv header mapping m_bpsk[i & 1][b] (b = 0 for chip +1, b = 1 for
+ * chip -1):
+ *   even index: chip +1 -> (+,+)/sqrt2, chip -1 -> (-,-)/sqrt2
+ *   odd  index: chip +1 -> (-,+)/sqrt2, chip -1 -> (+,-)/sqrt2
  */
 static void chips_to_symbols(const int8_t *chips, unsigned int len,
 			     struct dvbs2x_complex *symbols,
 			     unsigned int sym_offset)
 {
+	const double r = 0.70710678118654752440;
 	unsigned int n;
 
 	for (n = 0; n < len; n++) {
-		double val = (double)chips[n];
-		unsigned int phase = (sym_offset + n) & 3;
+		int b = chips[n] < 0;	/* chip -1 -> bit 1 */
+		unsigned int idx = sym_offset + n;
 
-		switch (phase) {
-		case 0:
-			symbols[n].i = val;
-			symbols[n].q = 0.0;
-			break;
-		case 1:
-			symbols[n].i = 0.0;
-			symbols[n].q = val;
-			break;
-		case 2:
-			symbols[n].i = -val;
-			symbols[n].q = 0.0;
-			break;
-		case 3:
-			symbols[n].i = 0.0;
-			symbols[n].q = -val;
-			break;
+		if ((idx & 1) == 0) {
+			symbols[n].i = b ? -r : r;
+			symbols[n].q = b ? -r : r;
+		} else {
+			symbols[n].i = b ? r : -r;
+			symbols[n].q = b ? -r : r;
 		}
 	}
 }
@@ -150,40 +143,24 @@ static void chips_to_symbols(const int8_t *chips, unsigned int len,
 void dvbs2x_vlsnr_header_generate(const struct dvbs2x_modcod *modcod,
 				  struct dvbs2x_complex *symbols)
 {
-	int8_t chips[DVBS2X_VLSNR_WH_LEN];
+	int8_t chips[DVBS2X_VLSNR_HDR_LEN];
 	unsigned int annex_idx;
 
 	if (modcod->index < 1 || modcod->index > DVBS2X_VLSNR_NUM_MODCODS)
 		return;
 	annex_idx = modcod_to_annex_i[modcod->index - 1];
 
-	/* 2-symbol zero padding at the start (bit 0 -> +1) */
-	symbols[0].i = 1.0;	/* phase 0: exp(j*0) = (1,0) */
-	symbols[0].q = 0.0;
-	symbols[1].i = 0.0;	/* phase 1: exp(j*pi/2) = (0,1) */
-	symbols[1].q = 1.0;
-
-	/* 896-symbol WH pattern */
-	vlsnr_generate_pattern(annex_idx, chips);
-	chips_to_symbols(chips, DVBS2X_VLSNR_WH_LEN, symbols + 2, 2);
-
-	/* 2-symbol zero padding at the end */
-	{
-		unsigned int n = 2 + DVBS2X_VLSNR_WH_LEN;
-		unsigned int phase;
-
-		phase = n & 3;
-		symbols[n].i = (phase == 0 || phase == 2) ?
-			       ((phase == 0) ? 1.0 : -1.0) : 0.0;
-		symbols[n].q = (phase == 1 || phase == 3) ?
-			       ((phase == 1) ? 1.0 : -1.0) : 0.0;
-		n++;
-		phase = n & 3;
-		symbols[n].i = (phase == 0 || phase == 2) ?
-			       ((phase == 0) ? 1.0 : -1.0) : 0.0;
-		symbols[n].q = (phase == 1 || phase == 3) ?
-			       ((phase == 1) ? 1.0 : -1.0) : 0.0;
-	}
+	/*
+	 * Full 900-symbol header: 2 zero-pad bits, the 896-bit WH pattern,
+	 * 2 zero-pad bits, all mapped period-2 (gr-dtv maps the entire
+	 * header with m_bpsk[i & 1][b], pads included).
+	 */
+	chips[0] = +1;
+	chips[1] = +1;
+	vlsnr_generate_pattern(annex_idx, chips + 2);
+	chips[2 + DVBS2X_VLSNR_WH_LEN] = +1;
+	chips[3 + DVBS2X_VLSNR_WH_LEN] = +1;
+	chips_to_symbols(chips, DVBS2X_VLSNR_HDR_LEN, symbols, 0);
 }
 
 void dvbs2x_wh_generate(unsigned int index, int8_t *seq)

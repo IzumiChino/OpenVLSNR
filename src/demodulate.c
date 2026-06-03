@@ -2,64 +2,39 @@
 /*
  * DVB-S2X VL-SNR Soft Demapper
  *
- * Computes log-likelihood ratios (LLR) for received symbols.
- * Positive LLR indicates bit 0 is more likely.
+ * Computes log-likelihood ratios (LLR) for received symbols.  A positive
+ * LLR means bit 0 is more likely (matching the LDPC decoder, which takes
+ * llr < 0 as bit 1).
  *
- * For pi/2-BPSK: LLR = 2 * Re(y * conj(r)) / sigma^2
- * where r is the reference constellation point and y is received.
+ * pi/2-BPSK uses the period-2 diagonal constellation (gr-dtv m_bpsk):
+ *   even index: bit 0 at (+,+)/sqrt2 -> decision metric (i + q)/sqrt2
+ *   odd  index: bit 0 at (-,+)/sqrt2 -> decision metric (q - i)/sqrt2
+ * LLR = 2 * metric / sigma^2 = sqrt(2) * (component sum) / sigma^2.
  *
- * For QPSK: independent LLR for each bit dimension.
+ * For QPSK the I and Q components carry independent Gray-coded bits.
  */
 
 #include "modulator.h"
 #include <math.h>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
-
 #define M_SQRT1_2 0.70710678118654752440
+#define M_SQRT2_D 1.41421356237309504880
 
-/*
- * dvbs2x_demod_pi2bpsk - Compute LLRs for pi/2-BPSK symbols
- * @symbols: received complex symbols
- * @llr: output LLR values (one per symbol)
- * @len: number of symbols
- * @noise_var: noise variance (sigma^2)
- */
 void dvbs2x_demod_pi2bpsk(const struct dvbs2x_complex *symbols,
 			  double *llr, unsigned int len,
 			  double noise_var)
 {
 	unsigned int n;
-	double angle;
-	double cos_a, sin_a;
-	double re_derot;
+	double scale = M_SQRT2_D / noise_var;
 
 	for (n = 0; n < len; n++) {
-		/* Remove pi/2 rotation */
-		angle = (double)(n % 4) * M_PI / 2.0;
-		cos_a = cos(angle);
-		sin_a = sin(angle);
-
-		/* De-rotate: multiply by exp(-j*angle) */
-		re_derot = symbols[n].i * cos_a + symbols[n].q * sin_a;
-
-		/*
-		 * LLR for BPSK: 2 * y_real / sigma^2
-		 * Positive means bit 0 (+1) more likely
-		 */
-		llr[n] = 2.0 * re_derot / noise_var;
+		if ((n & 1) == 0)
+			llr[n] = scale * (symbols[n].i + symbols[n].q);
+		else
+			llr[n] = scale * (symbols[n].q - symbols[n].i);
 	}
 }
 
-/*
- * dvbs2x_demod_qpsk - Compute LLRs for QPSK symbols
- * @symbols: received complex symbols
- * @llr: output LLR values (two per symbol)
- * @num_symbols: number of symbols
- * @noise_var: noise variance (sigma^2)
- */
 void dvbs2x_demod_qpsk(const struct dvbs2x_complex *symbols,
 			double *llr, unsigned int num_symbols,
 			double noise_var)
@@ -78,22 +53,15 @@ void dvbs2x_demod_qpsk(const struct dvbs2x_complex *symbols,
 	}
 }
 
-/*
- * dvbs2x_demod_despread - Combine spread symbols (factor 2)
- * @in: input symbols (2 * out_len)
- * @out: output combined symbols
- * @out_len: number of output symbols
- *
- * Averages pairs of consecutive symbols.
- */
-void dvbs2x_demod_despread(const struct dvbs2x_complex *in,
-			   struct dvbs2x_complex *out,
-			   unsigned int out_len)
+void dvbs2x_demod_despread_llr(const double *in, double *out,
+			       unsigned int out_len)
 {
 	unsigned int n;
 
-	for (n = 0; n < out_len; n++) {
-		out[n].i = (in[2 * n].i + in[2 * n + 1].i) * 0.5;
-		out[n].q = (in[2 * n].q + in[2 * n + 1].q) * 0.5;
-	}
+	/*
+	 * Despread factor 2: sum the LLRs from each symbol pair (same
+	 * coded bit at even and odd pi/2-BPSK phases).
+	 */
+	for (n = 0; n < out_len; n++)
+		out[n] = in[2 * n] + in[2 * n + 1];
 }

@@ -92,7 +92,7 @@ static void run_point(const struct dvbs2x_modcod *mc, unsigned int idx,
 	struct dvbs2x_demodulator demod;
 	uint8_t *uin, *uout;
 	struct dvbs2x_complex *iq;
-	unsigned int user_bits = mc->k_bch - mc->xs - 80;
+	unsigned int user_bits = mc->k_bch - 80;
 	unsigned int cap, out_len, rec_len, i, fr;
 	unsigned long errs = 0, total = 0, frame_err = 0;
 	double sigma = sqrt(1.0 / (2.0 * pow(10.0, esn0_db / 10.0)));

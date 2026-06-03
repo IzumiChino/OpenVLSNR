@@ -107,7 +107,7 @@ int main(int argc, char *argv[])
 	}
 
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
-	user_bits = mc->k_bch - mc->xs - 80;
+	user_bits = mc->k_bch - 80;
 	cap = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN +
 	      mc->fec_len * 2 + mc->fec_len / 16 + 256;
 	cap *= 4;

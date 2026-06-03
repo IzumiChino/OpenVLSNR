@@ -2,80 +2,46 @@
 /*
  * DVB-S2X VL-SNR Pilot Block Insertion and Extraction
  *
- * VL-SNR frames have mandatory pilots with three block types:
- * - Regular pilot blocks (36 symbols, every 1440 data symbols)
- * - VL-SNR Type 1 pilot blocks
- * - VL-SNR Type 2 pilot blocks
+ * Pilot positions follow the data-field layout (see vlsnr_layout.h).
+ * Each pilot symbol is (1+j)/sqrt(2) before PL scrambling.
  *
- * Pilot symbols are (1+j)/sqrt(2) before scrambling.
- *
- * Reference: ETSI EN 302 307-2 clause 5.5.2.6
+ * Reference: ETSI EN 302 307-2 clause 5.5.2
  */
 
 #ifndef DVBS2X_PILOT_H
 #define DVBS2X_PILOT_H
 
 #include "dvbs2x_types.h"
+#include "vlsnr_layout.h"
 
-/* Regular pilot block interval (data symbols between pilots) */
-#define DVBS2X_PILOT_INTERVAL	1440
-
-/* Pilot block parameters for a given MODCOD */
-struct dvbs2x_pilot_params {
-	/* Regular pilots */
-	unsigned int	reg_blk_len;
-	unsigned int	reg_num_blks;
-
-	/* VL-SNR type 1 pilots */
-	unsigned int	vlsnr1_blk_len;
-	unsigned int	vlsnr1_num_blks;
-
-	/* VL-SNR type 2 pilots */
-	unsigned int	vlsnr2_blk_len;
-	unsigned int	vlsnr2_num_blks;
-
-	/* Total frame length with pilots */
-	unsigned int	frame_symbols;
-};
+/* Pilot symbol value before scrambling: m_bpsk[0][0] = (1+j)/sqrt(2) */
+#define DVBS2X_PILOT_I	0.70710678118654752440
+#define DVBS2X_PILOT_Q	0.70710678118654752440
 
 /*
- * dvbs2x_pilot_get_params - Get pilot parameters for a MODCOD
- * @modcod: MODCOD parameters
- * @params: output pilot parameters
+ * dvbs2x_pilot_insert - Interleave data symbols with pilot blocks
+ * @data: payload symbols (lay->num_data of them)
+ * @lay: data-field layout
+ * @output: output data field (lay->field_len symbols)
  *
- * Returns 0 on success, -1 on error.
- */
-int dvbs2x_pilot_get_params(const struct dvbs2x_modcod *modcod,
-			    struct dvbs2x_pilot_params *params);
-
-/*
- * dvbs2x_pilot_insert - Insert pilot blocks into data stream
- * @data: input data symbols
- * @data_len: number of data symbols
- * @output: output with pilots inserted
- * @modcod: MODCOD parameters
- *
- * Returns total output length (data + pilots).
+ * Returns the number of symbols written (lay->field_len).
  */
 unsigned int dvbs2x_pilot_insert(const struct dvbs2x_complex *data,
-				 unsigned int data_len,
-				 struct dvbs2x_complex *output,
-				 const struct dvbs2x_modcod *modcod);
+				 const struct dvbs2x_vlsnr_layout *lay,
+				 struct dvbs2x_complex *output);
 
 /*
- * dvbs2x_pilot_extract - Extract pilot symbols from received frame
- * @frame: received frame symbols (with pilots)
- * @frame_len: total frame length
- * @data: output data symbols (pilots removed)
- * @pilots: output pilot symbols (may be NULL)
- * @modcod: MODCOD parameters
+ * dvbs2x_pilot_extract - Separate payload symbols from a received field
+ * @field: received data field (lay->field_len symbols)
+ * @lay: data-field layout
+ * @data: output payload symbols (lay->num_data of them)
+ * @pilots: output pilot symbols (lay->num_pilot of them; may be NULL)
  *
- * Returns number of data symbols extracted.
+ * Returns the number of payload symbols extracted (lay->num_data).
  */
-unsigned int dvbs2x_pilot_extract(const struct dvbs2x_complex *frame,
-				  unsigned int frame_len,
+unsigned int dvbs2x_pilot_extract(const struct dvbs2x_complex *field,
+				  const struct dvbs2x_vlsnr_layout *lay,
 				  struct dvbs2x_complex *data,
-				  struct dvbs2x_complex *pilots,
-				  const struct dvbs2x_modcod *modcod);
+				  struct dvbs2x_complex *pilots);
 
 #endif /* DVBS2X_PILOT_H */

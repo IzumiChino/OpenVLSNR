@@ -20,6 +20,9 @@
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#ifdef DEBUG
+#include <stdio.h>
+#endif
 
 /* LLR clamp magnitude -- prevents Inf-Inf = NaN in boxplus */
 #define LLR_CLAMP	40.0

@@ -87,16 +87,16 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	const struct dvbs2x_modcod *mc = mod->cfg.modcod;
 	uint8_t *bbframe = NULL;
 	uint8_t *bch_out = NULL;
+	uint8_t *ldpc_info = NULL;
 	uint8_t *ldpc_cw = NULL;
 	uint8_t *tx_bits = NULL;
 	uint8_t *interleaved = NULL;
-	struct dvbs2x_complex *data_sym = NULL;
+	uint8_t *spread_bits = NULL;
 	struct dvbs2x_complex *tx_sym = NULL;
+	struct dvbs2x_vlsnr_layout lay = { 0, 0, 0, NULL };
 	unsigned int tx_coded;		/* bits after shorten + puncture */
-	unsigned int num_mod_sym;
 	unsigned int num_tx_sym;
 	unsigned int hdr_len;
-	unsigned int pilot_len;
 	unsigned int i, p_idx, t_idx;
 	int ret = DVBS2X_ERR_NOMEM;
 
@@ -105,11 +105,16 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 
 	bbframe = malloc(mc->k_bch);
 	bch_out = malloc(mc->n_bch);
+	ldpc_info = malloc(mc->k_ldpc);
 	ldpc_cw = malloc(mc->fec_len);
 	tx_bits = malloc(tx_coded);
 	interleaved = malloc(tx_coded);
-	if (!bbframe || !bch_out || !ldpc_cw || !tx_bits || !interleaved)
+	if (!bbframe || !bch_out || !ldpc_info || !ldpc_cw || !tx_bits ||
+	    !interleaved)
 		goto out;
+
+	/* Signal the configured roll-off in the BB header MATYPE-1 */
+	mod->bb_ctx.ro = dvbs2x_ro_from_rolloff(mod->cfg.rolloff);
 
 	/* BB frame -> BCH -> LDPC */
 	if (dvbs2x_bb_frame_build(&mod->bb_ctx, user_data, user_len,
@@ -123,11 +128,14 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	}
 
 	/*
-	 * LDPC encode.  The BB frame has xs zero bits prepended
-	 * (shortening), so the BCH codeword's first xs positions
-	 * are zero, matching the LDPC shortening requirement.
+	 * Build the LDPC information word and encode it.  Per ETSI EN 302 307
+	 * the BCH codeword is prepended with xs shortening zeros (not
+	 * transmitted) to fill the k_ldpc-bit LDPC information word.
 	 */
-	if (dvbs2x_ldpc_encode(&mod->ldpc_enc, bch_out, ldpc_cw) < 0) {
+	if (mc->xs)
+		memset(ldpc_info, 0, mc->xs);
+	memcpy(ldpc_info + mc->xs, bch_out, mc->n_bch);
+	if (dvbs2x_ldpc_encode(&mod->ldpc_enc, ldpc_info, ldpc_cw) < 0) {
 		ret = DVBS2X_ERR_PARAM;
 		goto out;
 	}
@@ -158,58 +166,73 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	/* Interleave the transmitted bits */
 	dvbs2x_interleave(mc, tx_bits, interleaved);
 
-	/* Constellation mapping */
-	if (mc->modulation == DVBS2X_MOD_QPSK)
-		num_mod_sym = tx_coded / 2;
-	else
-		num_mod_sym = tx_coded;
-
-	data_sym = malloc(num_mod_sym * sizeof(struct dvbs2x_complex));
-	if (!data_sym)
+	/* Build the data-field layout (data/pilot positions) */
+	if (dvbs2x_vlsnr_build_layout(mc, &lay) < 0)
 		goto out;
 
-	if (mc->modulation == DVBS2X_MOD_QPSK)
-		dvbs2x_mod_qpsk(interleaved, data_sym, num_mod_sym);
-	else
-		dvbs2x_mod_pi2bpsk(interleaved, data_sym, num_mod_sym);
-
-	/* Spreading */
-	if (mc->has_spread) {
-		num_tx_sym = num_mod_sym * 2;
-		tx_sym = malloc(num_tx_sym *
-				sizeof(struct dvbs2x_complex));
+	/*
+	 * Constellation mapping.  For SF2 each coded bit is duplicated
+	 * (bit-level spreading) before pi/2-BPSK mapping, so the two
+	 * copies land on the even and odd diagonals.
+	 */
+	if (mc->modulation == DVBS2X_MOD_QPSK) {
+		num_tx_sym = tx_coded / 2;
+		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
 		if (!tx_sym)
 			goto out;
-		dvbs2x_mod_spread(data_sym, tx_sym, num_mod_sym);
+		dvbs2x_mod_qpsk(interleaved, tx_sym, num_tx_sym);
+	} else if (mc->has_spread) {
+		num_tx_sym = tx_coded * 2;
+		spread_bits = malloc(num_tx_sym);
+		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
+		if (!spread_bits || !tx_sym)
+			goto out;
+		dvbs2x_mod_spread_bits(interleaved, spread_bits, tx_coded);
+		dvbs2x_mod_pi2bpsk(spread_bits, tx_sym, num_tx_sym);
 	} else {
-		num_tx_sym = num_mod_sym;
-		tx_sym = data_sym;
-		data_sym = NULL;
+		num_tx_sym = tx_coded;
+		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
+		if (!tx_sym)
+			goto out;
+		dvbs2x_mod_pi2bpsk(interleaved, tx_sym, num_tx_sym);
+	}
+
+	if (num_tx_sym != lay.num_data) {
+		ret = DVBS2X_ERR_PARAM;
+		goto out;
 	}
 
 	/* Headers (unscrambled) */
 	dvbs2x_plheader_generate(mc->pls_code, symbols);
 	dvbs2x_vlsnr_header_generate(mc, symbols + DVBS2X_PLHEADER_LEN);
 
-	/* Data field with pilots */
-	pilot_len = dvbs2x_pilot_insert(tx_sym, num_tx_sym,
-					symbols + hdr_len, mc);
+	/* Data field: interleave payload with pilots per the layout */
+	dvbs2x_pilot_insert(tx_sym, &lay, symbols + hdr_len);
 
-	/* Scramble the data field only (payload + pilots) */
+	/*
+	 * Scramble the data field (payload + pilots).  The VL-SNR data
+	 * field reads the PL scrambler from index VLSNR_HDR_LEN (900);
+	 * non-QPSK payload is scrambled by real +/-1, pilots by 4-phase.
+	 */
 	dvbs2x_scrambler_reset(&mod->scrambler);
-	dvbs2x_scramble(&mod->scrambler, symbols + hdr_len, pilot_len);
+	dvbs2x_scrambler_seek(&mod->scrambler, DVBS2X_VLSNR_HDR_LEN);
+	dvbs2x_scramble_field(&mod->scrambler, symbols + hdr_len,
+			      lay.field_len, lay.is_pilot,
+			      mc->modulation == DVBS2X_MOD_QPSK);
 
-	*sym_len = hdr_len + pilot_len;
+	*sym_len = hdr_len + lay.field_len;
 	ret = DVBS2X_OK;
 
 out:
 	free(bbframe);
 	free(bch_out);
+	free(ldpc_info);
 	free(ldpc_cw);
 	free(tx_bits);
 	free(interleaved);
-	free(data_sym);
+	free(spread_bits);
 	free(tx_sym);
+	dvbs2x_vlsnr_free_layout(&lay);
 	return ret;
 }
 
@@ -228,12 +251,12 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 
 	/*
 	 * Worst-case frame size: header + all transmitted symbols
-	 * (with spread, up to 2*tx_coded) + pilot blocks + slack.
+	 * (with spread, up to 2*tx_coded) + pilot blocks + slack.  The
+	 * VL-SNR pilot overhead is well under 2*tx_coded/4.
 	 */
 	frame_cap = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN +
 		    dvbs2x_tx_coded_bits(mc) * 2 +
-		    (dvbs2x_tx_coded_bits(mc) * 2 / DVBS2X_PILOT_INTERVAL
-		     + 1) * DVBS2X_PILOT_BLK_LEN + 64;
+		    dvbs2x_tx_coded_bits(mc) / 2 + 128;
 
 	frame = malloc(frame_cap * sizeof(struct dvbs2x_complex));
 	if (!frame)

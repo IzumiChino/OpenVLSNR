@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
 	}
 
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
-	user_bits = mc->k_bch - mc->xs - 80;
+	user_bits = mc->k_bch - 80;
 
 	/* Allocate stream buffer for all frames */
 	frame_samples = 80000;

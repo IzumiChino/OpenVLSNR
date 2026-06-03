@@ -90,10 +90,10 @@ struct dvbs2x_modcod {
 	int			has_spread;	/* spreading factor 2 */
 	enum dvbs2x_vlsnr_set	set;
 	unsigned int		pls_code;
-	unsigned int		k_bch;		/* BCH input bits */
-	unsigned int		n_bch;		/* BCH output bits */
+	unsigned int		k_bch;		/* BCH input bits (kbch) */
+	unsigned int		n_bch;		/* BCH output bits (nbch) */
 	unsigned int		bch_t;		/* BCH correction capability */
-	unsigned int		k_ldpc;		/* LDPC info bits = n_bch */
+	unsigned int		k_ldpc;		/* LDPC info bits = xs + n_bch */
 	unsigned int		q_ldpc;		/* LDPC circulant size */
 	/* Puncturing/shortening parameters */
 	unsigned int		xs;		/* shortening: zero-prepend */

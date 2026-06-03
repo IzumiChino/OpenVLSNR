@@ -2,30 +2,30 @@
 /*
  * DVB-S2X PL Header Generation and Recovery
  *
- * PL Header = SOF (26 symbols) + PLS Code (64 symbols)
+ * PL Header = SOF (26 symbols) + PLS code (64 symbols), pi/2-BPSK.
  *
- * SOF: fixed 26-bit sequence, pi/2-BPSK modulated
- * PLS Code: 7 information bits encoded with (64,7) bi-orthogonal code
+ * The 64-bit PLS code is the (64,7) bi-orthogonal code of clause 5.5.2.3,
+ * built exactly as the on-air encoder does:
+ *   - the 7 high bits select rows of the generator g[7];
+ *   - the low bit b0 fills the odd output positions as out[2m+1]=out[2m]^b0;
+ *   - the whole 64-bit word is XORed with the fixed PL scrambling sequence.
  *
- * The (64,7) code is constructed from a (32,6) first-order Reed-Muller
- * code with an additional overall parity bit selecting between the
- * code and its complement.
+ * pi/2-BPSK uses the standard period-2 diagonal constellation.  For VL-SNR
+ * PL headers (PLS code & 0x80) the 64 PLS-code symbols use the shifted pair
+ * m_bpsk[(i&1)+2] while the 26 SOF symbols use m_bpsk[i&1], matching the
+ * reference physical-layer framer (gr-dtv dvbs2_physical_cc).
  *
- * Reference: ETSI EN 302 307-1 clause 5.5.2
+ * Reference: ETSI EN 302 307-1 clause 5.5.2, ETSI EN 302 307-2 (VL-SNR).
  */
 
 #include "plheader.h"
-#include <math.h>
 #include <string.h>
 
-#ifndef M_PI
-#define M_PI 3.14159265358979323846
-#endif
+#define M_SQRT1_2_F 0.70710678118654752440
 
 /*
- * SOF sequence (26 bits) from ETSI EN 302 307-1 Table 11
- * Hex: 18D2E82 (MSB first, 26 bits)
- * Binary: 01 1000 1101 0010 1110 1000 0010
+ * SOF sequence (26 bits), ETSI EN 302 307-1 Table 11 (hex 18D2E82),
+ * identical to the reference framer's ph_sync_seq[26].
  */
 static const uint8_t sof_sequence[DVBS2X_SOF_LEN] = {
 	0, 1, 1, 0, 0, 0, 1, 1, 0, 1, 0, 0, 1, 0,
@@ -33,17 +33,30 @@ static const uint8_t sof_sequence[DVBS2X_SOF_LEN] = {
 };
 
 /*
- * First-order Reed-Muller (32,6) generator matrix rows.
- * G = [g0; g1; g2; g3; g4; g5] where each gi is 32 bits.
- * Row 0 is all-ones (repetition), rows 1-5 are Walsh functions.
+ * PLS (64,7) code generator rows and the PL scrambling sequence,
+ * from ETSI EN 302 307-1 clause 5.5.2.4 (== gr-dtv g[7]/ph_scram_tab[64]).
  */
-static const uint32_t rm_generator[6] = {
-	0xFFFFFFFF,	/* all ones */
-	0xAAAAAAAA,	/* alternating 10 */
-	0xCCCCCCCC,	/* alternating 1100 */
-	0xF0F0F0F0,	/* alternating 11110000 */
-	0xFF00FF00,	/* alternating 8 */
-	0xFFFF0000,	/* first half 1, second half 0 */
+static const uint32_t pls_gen[7] = {
+	0x90AC2DDD, 0x55555555, 0x33333333, 0x0F0F0F0F,
+	0x00FF00FF, 0x0000FFFF, 0xFFFFFFFF
+};
+
+static const uint8_t pls_scram[DVBS2X_PLSC_LEN] = {
+	0, 1, 1, 1, 0, 0, 0, 1, 1, 0, 0, 1, 1, 1, 0, 1, 1, 0, 0, 0, 0, 0,
+	1, 1, 1, 1, 0, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0, 0, 1, 1, 0, 1, 0, 0,
+	0, 0, 1, 0, 0, 0, 1, 0, 1, 1, 0, 1, 1, 1, 1, 1, 1, 0, 1, 0
+};
+
+/*
+ * pi/2-BPSK PL-header constellation m_bpsk[phase][bit] = {I, Q}.
+ *   phase 0/1: even/odd SOF symbols (standard period-2 diagonals)
+ *   phase 2/3: even/odd VL-SNR PLS-code symbols (shifted pair)
+ */
+static const double pl_const[4][2][2] = {
+	{ {  M_SQRT1_2_F,  M_SQRT1_2_F }, { -M_SQRT1_2_F, -M_SQRT1_2_F } },
+	{ { -M_SQRT1_2_F,  M_SQRT1_2_F }, {  M_SQRT1_2_F, -M_SQRT1_2_F } },
+	{ { -M_SQRT1_2_F,  M_SQRT1_2_F }, {  M_SQRT1_2_F, -M_SQRT1_2_F } },
+	{ { -M_SQRT1_2_F, -M_SQRT1_2_F }, {  M_SQRT1_2_F,  M_SQRT1_2_F } },
 };
 
 const uint8_t *dvbs2x_plheader_get_sof(void)
@@ -52,108 +65,96 @@ const uint8_t *dvbs2x_plheader_get_sof(void)
 }
 
 /*
- * Encode PLS code using (64,7) bi-orthogonal code.
- * Input: 7-bit PLS decimal code (bits b6..b0)
- * Output: 64 encoded bits
- *
- * b6..b1 select a (32,6) RM codeword
- * b0 determines if the 64-bit output uses the codeword or its complement
- * The 64-bit code = [codeword, codeword XOR b0_mask]
+ * Encode an 8-bit PLS code into the 64-bit bi-orthogonal codeword.
+ * @code: PL signalling code (e.g. 129 = VL-SNR Set 1, 131 = Set 2)
+ * @encoded: 64 output bits
  */
-static void pls_encode(unsigned int pls_code, uint8_t *encoded)
+static void pls_encode(unsigned int code, uint8_t *encoded)
 {
-	uint32_t codeword = 0;
-	unsigned int i;
-	uint8_t b0;
+	uint32_t temp = 0, bit;
+	unsigned int m;
 
-	/* Extract bits: b6 is MSB of the 7-bit code */
-	b0 = pls_code & 1;
+	if (code & 0x80)
+		temp ^= pls_gen[0];
+	if (code & 0x40)
+		temp ^= pls_gen[1];
+	if (code & 0x20)
+		temp ^= pls_gen[2];
+	if (code & 0x10)
+		temp ^= pls_gen[3];
+	if (code & 0x08)
+		temp ^= pls_gen[4];
+	if (code & 0x04)
+		temp ^= pls_gen[5];
+	if (code & 0x02)
+		temp ^= pls_gen[6];
 
-	/* Generate (32,6) RM codeword from bits b6..b1 */
-	for (i = 0; i < 6; i++) {
-		if ((pls_code >> (i + 1)) & 1)
-			codeword ^= rm_generator[i];
+	bit = 0x80000000;
+	for (m = 0; m < 32; m++) {
+		encoded[m * 2] = (temp & bit) ? 1 : 0;
+		encoded[m * 2 + 1] = encoded[m * 2] ^ (code & 0x01);
+		bit >>= 1;
 	}
-
-	/* First 32 bits: the codeword */
-	for (i = 0; i < 32; i++)
-		encoded[i] = (codeword >> (31 - i)) & 1;
-
-	/*
-	 * Second 32 bits: complement pattern
-	 * Even-indexed output bits = codeword bits
-	 * Odd-indexed output bits = codeword bits XOR b0
-	 */
-	for (i = 0; i < 32; i++) {
-		uint8_t bit = (codeword >> (31 - i)) & 1;
-
-		encoded[32 + i] = bit ^ b0;
-	}
+	for (m = 0; m < DVBS2X_PLSC_LEN; m++)
+		encoded[m] ^= pls_scram[m];
 }
 
 void dvbs2x_plheader_generate(unsigned int pls_code,
 			      struct dvbs2x_complex *symbols)
 {
-	uint8_t plsc_bits[DVBS2X_PLSC_LEN];
 	uint8_t all_bits[DVBS2X_PLHEADER_LEN];
+	int vlsnr = (pls_code & 0x80) != 0;
 	unsigned int n;
-	double val, angle;
 
-	/* Combine SOF + encoded PLS code (lower 7 bits only) */
+	/* SOF bits + 64 encoded PLS-code bits (full 8-bit code) */
 	memcpy(all_bits, sof_sequence, DVBS2X_SOF_LEN);
-	pls_encode(pls_code & 0x7F, plsc_bits);
-	memcpy(all_bits + DVBS2X_SOF_LEN, plsc_bits, DVBS2X_PLSC_LEN);
+	pls_encode(pls_code & 0xFF, all_bits + DVBS2X_SOF_LEN);
 
-	/* pi/2-BPSK modulation */
 	for (n = 0; n < DVBS2X_PLHEADER_LEN; n++) {
-		val = all_bits[n] ? -1.0 : 1.0;
-		angle = (double)(n % 4) * M_PI / 2.0;
-		symbols[n].i = val * cos(angle);
-		symbols[n].q = val * sin(angle);
+		unsigned int b = all_bits[n] & 1;
+		unsigned int phase;
+
+		if (n < DVBS2X_SOF_LEN)
+			phase = n & 1;			/* SOF: m_bpsk[i&1] */
+		else
+			phase = (n & 1) + (vlsnr ? 2 : 0);
+
+		symbols[n].i = pl_const[phase][b][0];
+		symbols[n].q = pl_const[phase][b][1];
 	}
 }
 
 int dvbs2x_plheader_recover(const struct dvbs2x_complex *symbols,
 			    unsigned int *pls_code)
 {
-	double derot[DVBS2X_PLHEADER_LEN];
 	double plsc_soft[DVBS2X_PLSC_LEN];
-	unsigned int n;
-	double angle, cos_a, sin_a;
 	double best_corr;
-	unsigned int best_code;
-	unsigned int code;
-
-	/* De-rotate pi/2-BPSK */
-	for (n = 0; n < DVBS2X_PLHEADER_LEN; n++) {
-		angle = (double)(n % 4) * M_PI / 2.0;
-		cos_a = cos(angle);
-		sin_a = sin(angle);
-		derot[n] = symbols[n].i * cos_a + symbols[n].q * sin_a;
-	}
-
-	/* Extract PLS code soft values */
-	for (n = 0; n < DVBS2X_PLSC_LEN; n++)
-		plsc_soft[n] = derot[DVBS2X_SOF_LEN + n];
+	unsigned int best_code, code, n;
 
 	/*
-	 * ML decoding: correlate with all 128 possible codewords
-	 * (7 bits -> 128 possibilities)
+	 * Soft de-map of the 64 PLS-code symbols.  b=0 and b=1 map to
+	 * antipodal points, so the per-symbol soft value is the correlation
+	 * with the b=0 reference; this library only emits VL-SNR PL headers,
+	 * whose PLS-code symbols use the shifted pair m_bpsk[(i&1)+2].
 	 */
+	for (n = 0; n < DVBS2X_PLSC_LEN; n++) {
+		unsigned int i = DVBS2X_SOF_LEN + n;
+		unsigned int phase = (i & 1) + 2;
+
+		plsc_soft[n] = symbols[i].i * pl_const[phase][0][0] +
+			       symbols[i].q * pl_const[phase][0][1];
+	}
+
+	/* ML decode: pick the 8-bit code whose codeword correlates best */
 	best_corr = -1e30;
 	best_code = 0;
-
-	for (code = 0; code < 128; code++) {
-		uint8_t encoded[DVBS2X_PLSC_LEN];
+	for (code = 0; code < 256; code++) {
+		uint8_t enc[DVBS2X_PLSC_LEN];
 		double corr = 0.0;
 
-		pls_encode(code, encoded);
-
-		for (n = 0; n < DVBS2X_PLSC_LEN; n++) {
-			double ref = encoded[n] ? -1.0 : 1.0;
-
-			corr += plsc_soft[n] * ref;
-		}
+		pls_encode(code, enc);
+		for (n = 0; n < DVBS2X_PLSC_LEN; n++)
+			corr += plsc_soft[n] * (enc[n] ? -1.0 : 1.0);
 
 		if (corr > best_corr) {
 			best_corr = corr;
@@ -161,14 +162,7 @@ int dvbs2x_plheader_recover(const struct dvbs2x_complex *symbols,
 		}
 	}
 
-	/*
-	 * Return the 7-bit decoded value. The caller must add the
-	 * high bit (0x80) for DVB-S2X VL-SNR codes based on context
-	 * (presence of VL-SNR header following the PL header).
-	 *
-	 * For VL-SNR: PLS decimal code = decoded_7bit | 0x80
-	 * For regular DVB-S2/S2X: PLS decimal code = decoded_7bit
-	 */
-	*pls_code = best_code;
+	/* Return the low 7 bits (MODCOD/type field) of the recovered code */
+	*pls_code = best_code & 0x7F;
 	return 0;
 }

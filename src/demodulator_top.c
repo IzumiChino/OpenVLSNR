@@ -68,30 +68,22 @@
 #define ACQ_WINDOW	4096
 
 /*
- * Number of pilot-bearing data symbols (after spreading) and the
- * resulting data-field length including 36-symbol pilot blocks.
+ * Number of payload symbols (after spreading) and the resulting
+ * data-field length including pilot blocks, from the VL-SNR layout.
+ * Returns 0 on success.
  */
-static void frame_geometry(const struct dvbs2x_modcod *mc,
-			   unsigned int *num_tx_sym,
-			   unsigned int *data_field_len)
+static int frame_geometry(const struct dvbs2x_modcod *mc,
+			  unsigned int *num_tx_sym,
+			  unsigned int *data_field_len)
 {
-	unsigned int tx_coded;
-	unsigned int mod_sym;
-	unsigned int tx_sym;
-	unsigned int blks;
+	struct dvbs2x_vlsnr_layout lay;
 
-	tx_coded = dvbs2x_tx_coded_bits(mc);
-
-	if (mc->modulation == DVBS2X_MOD_QPSK)
-		mod_sym = tx_coded / 2;
-	else
-		mod_sym = tx_coded;
-
-	tx_sym = mc->has_spread ? mod_sym * 2 : mod_sym;
-	blks = (tx_sym - 1) / DVBS2X_PILOT_INTERVAL;
-
-	*num_tx_sym = tx_sym;
-	*data_field_len = tx_sym + blks * DVBS2X_PILOT_BLK_LEN;
+	if (dvbs2x_vlsnr_build_layout(mc, &lay) < 0)
+		return -1;
+	*num_tx_sym = lay.num_data;
+	*data_field_len = lay.field_len;
+	dvbs2x_vlsnr_free_layout(&lay);
+	return 0;
 }
 
 /* Rotate symbols [base, base+span) by exp(-j(2*pi*f*n + phi)), n from 0. */
@@ -225,24 +217,24 @@ static void coarse_freq_recover(struct dvbs2x_complex *sym,
 
 /*
  * Residual carrier tracking: measure the phase on the header and on
- * every pilot block, unwrap, weighted-linear-fit phase against frame
- * position, and de-rotate the whole data field.
+ * every pilot block (from the data-field layout), unwrap, weighted-
+ * linear-fit phase against frame position, and de-rotate the whole data
+ * field.  The data field must already be descrambled, so the pilots sit
+ * at their nominal reference (1+j)/sqrt(2).
  */
 static void residual_carrier_track(struct dvbs2x_complex *sym,
 				   unsigned int wh_start,
-				   unsigned int data_field_len,
-				   unsigned int num_tx_sym,
+				   const struct dvbs2x_vlsnr_layout *lay,
 				   const struct dvbs2x_complex *wh_ref)
 {
-	double pos[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
-	double ph[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
-	double wt[DVBS2X_VLSNR_FRAME_LONG / DVBS2X_PILOT_INTERVAL + 4];
-	unsigned int ns = 0;
 	unsigned int data_start = wh_start + DVBS2X_VLSNR_WH_LEN + 2;
-	unsigned int blk_off, n;
+	unsigned int n, i;
 	double ci, cq;
 	double sw, swp, swt, swpp, swpt, denom, a, b;
-	unsigned int k;
+	double prev_ph;
+	int have_prev = 0;
+
+	sw = swp = swt = swpp = swpt = 0.0;
 
 	/* Header phase sample (anchor) at the header centre */
 	ci = 0.0;
@@ -253,54 +245,71 @@ static void residual_carrier_track(struct dvbs2x_complex *sym,
 		ci += r->i * wh_ref[n].i + r->q * wh_ref[n].q;
 		cq += r->q * wh_ref[n].i - r->i * wh_ref[n].q;
 	}
-	pos[ns] = (double)(DVBS2X_VLSNR_WH_LEN - 1) / 2.0;
-	ph[ns] = atan2(cq, ci);
-	wt[ns] = (double)DVBS2X_VLSNR_WH_LEN;
-	ns++;
+	{
+		double pos = (double)(DVBS2X_VLSNR_WH_LEN - 1) / 2.0;
+		double phv = atan2(cq, ci);
+		double wv = (double)DVBS2X_VLSNR_WH_LEN;
+
+		sw += wv;
+		swp += wv * pos;
+		swt += wv * phv;
+		swpp += wv * pos * pos;
+		swpt += wv * pos * phv;
+		prev_ph = phv;
+		have_prev = 1;
+	}
 
 	/* One phase sample per pilot block (vs reference (1+j)/sqrt2) */
-	for (blk_off = DVBS2X_PILOT_INTERVAL;
-	     blk_off + DVBS2X_PILOT_BLK_LEN <= data_field_len;
-	     blk_off += DVBS2X_PILOT_INTERVAL + DVBS2X_PILOT_BLK_LEN) {
+	i = 0;
+	while (i < lay->field_len) {
+		unsigned int blk;
+
+		if (!lay->is_pilot[i]) {
+			i++;
+			continue;
+		}
+		blk = 0;
 		ci = 0.0;
 		cq = 0.0;
-		for (n = 0; n < DVBS2X_PILOT_BLK_LEN; n++) {
+		while (i + blk < lay->field_len && lay->is_pilot[i + blk]) {
 			const struct dvbs2x_complex *r =
-				&sym[data_start + blk_off + n];
+				&sym[data_start + i + blk];
 
 			ci += (r->i + r->q) * M_SQRT1_2_D;
 			cq += (r->q - r->i) * M_SQRT1_2_D;
+			blk++;
 		}
-		pos[ns] = (double)DVBS2X_VLSNR_WH_LEN + (double)blk_off +
-			  (double)(DVBS2X_PILOT_BLK_LEN - 1) / 2.0;
-		ph[ns] = atan2(cq, ci);
-		wt[ns] = (double)DVBS2X_PILOT_BLK_LEN;
-		ns++;
-	}
+		{
+			double pos = (double)DVBS2X_VLSNR_WH_LEN + (double)i +
+				     (double)(blk - 1) / 2.0;
+			double phv = atan2(cq, ci);
+			double wv = (double)blk;
 
-	/* Unwrap phase samples (ordered by increasing position) */
-	for (k = 1; k < ns; k++) {
-		double d = ph[k] - ph[k - 1];
+			if (have_prev) {
+				double d = phv - prev_ph;
 
-		while (d > M_PI) {
-			ph[k] -= 2.0 * M_PI;
-			d = ph[k] - ph[k - 1];
+				while (d > M_PI) {
+					phv -= 2.0 * M_PI;
+					d = phv - prev_ph;
+				}
+				while (d < -M_PI) {
+					phv += 2.0 * M_PI;
+					d = phv - prev_ph;
+				}
+			}
+			prev_ph = phv;
+			have_prev = 1;
+
+			sw += wv;
+			swp += wv * pos;
+			swt += wv * phv;
+			swpp += wv * pos * pos;
+			swpt += wv * pos * phv;
 		}
-		while (d < -M_PI) {
-			ph[k] += 2.0 * M_PI;
-			d = ph[k] - ph[k - 1];
-		}
+		i += blk;
 	}
 
 	/* Weighted linear fit phase = a*pos + b */
-	sw = swp = swt = swpp = swpt = 0.0;
-	for (k = 0; k < ns; k++) {
-		sw += wt[k];
-		swp += wt[k] * pos[k];
-		swt += wt[k] * ph[k];
-		swpp += wt[k] * pos[k] * pos[k];
-		swpt += wt[k] * pos[k] * ph[k];
-	}
 	denom = sw * swpp - swp * swp;
 	if (fabs(denom) < 1e-9) {
 		a = 0.0;
@@ -311,7 +320,7 @@ static void residual_carrier_track(struct dvbs2x_complex *sym,
 	}
 
 	/* De-rotate the data field by the fitted phase line */
-	for (n = 0; n < data_field_len; n++) {
+	for (n = 0; n < lay->field_len; n++) {
 		struct dvbs2x_complex *r = &sym[data_start + n];
 		double angle = a * (double)(DVBS2X_VLSNR_WH_LEN + n) + b;
 		double c = cos(angle), s = sin(angle);
@@ -321,8 +330,6 @@ static void residual_carrier_track(struct dvbs2x_complex *sym,
 		r->i = ti;
 		r->q = tq;
 	}
-
-	(void)num_tx_sym;
 }
 
 int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
@@ -369,15 +376,16 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	struct dvbs2x_complex *wh_ref = NULL;
 	struct dvbs2x_complex *data_sym = NULL;
 	struct dvbs2x_complex *pilots = NULL;
-	struct dvbs2x_complex *despread = NULL;
+	double *sym_llr = NULL;
 	double *llr = NULL;
 	double *deint = NULL;
 	uint8_t *ldpc_out = NULL;
 	uint8_t *bch_cw = NULL;
+	struct dvbs2x_vlsnr_layout lay = { 0, 0, 0, NULL };
 	unsigned int wh_start = 0, modcod_idx = 0;
 	unsigned int search_len;
-	unsigned int num_tx_sym, data_field_len, data_start;
-	unsigned int ndata, num_mod_sym;
+	unsigned int data_field_len, data_start;
+	unsigned int ndata, tx_coded;
 	unsigned int iter_used;
 	double conf, demap_nv, nv_est, esn0_db;
 	int ret = DVBS2X_ERR_FEC;
@@ -419,13 +427,17 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	}
 	demod->modcod = mc;
 
-	frame_geometry(mc, &num_tx_sym, &data_field_len);
+	if (dvbs2x_vlsnr_build_layout(mc, &lay) < 0) {
+		ret = DVBS2X_ERR_NOMEM;
+		goto out;
+	}
+	data_field_len = lay.field_len;
 	data_start = wh_start + DVBS2X_VLSNR_WH_LEN + 2;
 #ifdef DEBUG
 	fprintf(stderr,
-		"[dbg] wh_start=%u modcod=%u conf=%.3f tx_sym=%u "
+		"[dbg] wh_start=%u modcod=%u conf=%.3f data=%u "
 		"dfl=%u in_len=%u\n",
-		wh_start, modcod_idx, conf, num_tx_sym,
+		wh_start, modcod_idx, conf, lay.num_data,
 		data_field_len, in_len);
 #endif
 	if (data_start + data_field_len > in_len) {
@@ -468,118 +480,126 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			    DVBS2X_VLSNR_WH_LEN + 2 + data_field_len,
 			    wh_ref + 2, esn0_db);
 
-	/* Descramble the data field (payload + pilots) */
+	/*
+	 * Descramble the data field (payload + pilots).  The VL-SNR data
+	 * field reads the PL scrambler from index VLSNR_HDR_LEN (900);
+	 * non-QPSK payload is descrambled by real +/-1, pilots by 4-phase.
+	 */
 	dvbs2x_scrambler_reset(&demod->descrambler);
-	dvbs2x_descramble(&demod->descrambler, work + data_start,
-			  data_field_len);
+	dvbs2x_scrambler_seek(&demod->descrambler, DVBS2X_VLSNR_HDR_LEN);
+	dvbs2x_descramble_field(&demod->descrambler, work + data_start,
+				lay.field_len, lay.is_pilot,
+				mc->modulation == DVBS2X_MOD_QPSK);
 
 	/* Residual phase/frequency tracking from header + pilots */
-	residual_carrier_track(work, wh_start, data_field_len,
-			       num_tx_sym, wh_ref + 2);
+	residual_carrier_track(work, wh_start, &lay, wh_ref + 2);
 
-	/* Extract pilots and data symbols */
-	data_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
-	pilots = malloc((data_field_len - num_tx_sym + 1) *
-			sizeof(struct dvbs2x_complex));
+	/* Extract payload and pilot symbols per the layout */
+	data_sym = malloc(lay.num_data * sizeof(struct dvbs2x_complex));
+	pilots = malloc((lay.num_pilot + 1) * sizeof(struct dvbs2x_complex));
 	if (!data_sym || !pilots) {
 		ret = DVBS2X_ERR_NOMEM;
 		goto out;
 	}
+	ndata = dvbs2x_pilot_extract(work + data_start, &lay,
+				     data_sym, pilots);
 
-	ndata = dvbs2x_pilot_extract(work + data_start, data_field_len,
-				     data_sym, pilots, mc);
+	/*
+	 * Demapper noise variance: estimate from pilot scatter around
+	 * (1+j)/sqrt(2), or use the caller-supplied value if given.
+	 */
+	if (noise_var > 0.0) {
+		demap_nv = noise_var;
+	} else if (lay.num_pilot) {
+		double acc = 0.0;
+		unsigned int pi;
 
-	/* Despread if needed */
-	if (mc->has_spread) {
-		unsigned int dl = ndata / 2;
+		for (pi = 0; pi < lay.num_pilot; pi++) {
+			double di = pilots[pi].i - M_SQRT1_2_D;
+			double dq = pilots[pi].q - M_SQRT1_2_D;
 
-		despread = malloc(dl * sizeof(struct dvbs2x_complex));
-		if (!despread) {
-			ret = DVBS2X_ERR_NOMEM;
-			goto out;
+			acc += di * di + dq * dq;
 		}
-		dvbs2x_demod_despread(data_sym, despread, dl);
-		num_mod_sym = dl;
+		demap_nv = acc / (2.0 * (double)lay.num_pilot);
+		if (demap_nv < 1e-4)
+			demap_nv = 1e-4;
 	} else {
-		despread = data_sym;
-		data_sym = NULL;
-		num_mod_sym = ndata;
+		demap_nv = nv_est > 1e-4 ? nv_est : 1e-4;
+	}
+#ifdef DEBUG
+	fprintf(stderr, "[dbg] demap_nv=%.5f esn0~%.2f dB\n",
+		demap_nv, 10.0 * log10(1.0 / (2.0 * demap_nv + 1e-12)));
+#endif
+
+	tx_coded = dvbs2x_tx_coded_bits(mc);
+
+	/* Per-symbol soft demapping (period-2 pi/2-BPSK or QPSK) */
+	sym_llr = malloc((2 * ndata + 2) * sizeof(double));
+	llr = malloc(tx_coded * sizeof(double));
+	deint = malloc(mc->fec_len * sizeof(double));
+	if (!sym_llr || !llr || !deint) {
+		ret = DVBS2X_ERR_NOMEM;
+		goto out;
 	}
 
-	/* Soft demapping */
-	demap_nv = (noise_var > 0.0) ? noise_var : nv_est;
+	if (mc->modulation == DVBS2X_MOD_QPSK)
+		dvbs2x_demod_qpsk(data_sym, sym_llr, ndata, demap_nv);
+	else
+		dvbs2x_demod_pi2bpsk(data_sym, sym_llr, ndata, demap_nv);
+
+	/*
+	 * SF2 despread: each coded bit was carried by two symbols at the
+	 * even and odd pi/2-BPSK phases, so sum their LLRs.  Otherwise the
+	 * per-symbol LLRs are already the coded-bit LLRs.
+	 */
 	if (mc->has_spread)
-		demap_nv *= 0.5;	/* despread halves the noise */
+		dvbs2x_demod_despread_llr(sym_llr, llr, ndata / 2);
+	else if (mc->modulation == DVBS2X_MOD_QPSK)
+		memcpy(llr, sym_llr, 2 * ndata * sizeof(double));
+	else
+		memcpy(llr, sym_llr, ndata * sizeof(double));
 
+	/* Deinterleave (operates on tx_coded bits) */
+	dvbs2x_deinterleave(mc, llr, deint);
+
+	/*
+	 * Depuncture and deshorten: expand tx_coded LLRs back to the full
+	 * fec_len LDPC codeword.
+	 *   deint[0 .. k_ldpc-xs-1]        = info LLRs
+	 *   deint[k_ldpc-xs .. tx_coded-1] = unpunctured parity
+	 *   full_llr[0..xs-1]              = +clamp (shortened, known zero)
+	 *   full_llr[xs..k_ldpc-1]         = info LLRs
+	 *   full_llr[k_ldpc..fec_len-1]    = parity, 0.0 at punctured pos
+	 */
 	{
-		unsigned int tx_coded = dvbs2x_tx_coded_bits(mc);
+		double *full_llr;
+		unsigned int i, p_idx, d_idx;
 
-		llr = malloc(tx_coded * sizeof(double));
-		deint = malloc(mc->fec_len * sizeof(double));
-		if (!llr || !deint) {
+		full_llr = malloc(mc->fec_len * sizeof(double));
+		if (!full_llr) {
 			ret = DVBS2X_ERR_NOMEM;
 			goto out;
 		}
 
-		if (mc->modulation == DVBS2X_MOD_QPSK)
-			dvbs2x_demod_qpsk(despread, llr,
-					  num_mod_sym, demap_nv);
-		else
-			dvbs2x_demod_pi2bpsk(despread, llr,
-					     num_mod_sym, demap_nv);
+		for (i = 0; i < mc->xs; i++)
+			full_llr[i] = 40.0;
+		for (i = mc->xs; i < mc->k_ldpc; i++)
+			full_llr[i] = deint[i - mc->xs];
 
-		/* Deinterleave (operates on tx_coded bits) */
-		dvbs2x_deinterleave(mc, llr, deint);
-
-		/*
-		 * Depuncture and deshorten: expand tx_coded LLRs
-		 * back to the full fec_len LDPC codeword.
-		 *
-		 * deint[0 .. k_ldpc-xs-1] = info LLRs
-		 * deint[k_ldpc-xs .. tx_coded-1] = unpunctured parity
-		 *
-		 * Rebuild full_llr[0..fec_len-1]:
-		 *   [0..xs-1] = +LLR_CLAMP (shortened, known zero)
-		 *   [xs..k_ldpc-1] = info LLRs from deint
-		 *   [k_ldpc..fec_len-1] = parity with 0.0 at
-		 *                         punctured positions
-		 */
-		{
-			double *full_llr;
-			unsigned int i, p_idx, d_idx;
-
-			full_llr = malloc(mc->fec_len * sizeof(double));
-			if (!full_llr) {
-				ret = DVBS2X_ERR_NOMEM;
-				goto out;
+		d_idx = mc->k_ldpc - mc->xs;
+		p_idx = 0;
+		for (i = 0; i < mc->fec_len - mc->k_ldpc; i++) {
+			if (mc->xp > 0 && p_idx < mc->xp &&
+			    i == p_idx * mc->p_period) {
+				full_llr[mc->k_ldpc + i] = 0.0;
+				p_idx++;
+			} else {
+				full_llr[mc->k_ldpc + i] = deint[d_idx++];
 			}
-
-			/* Shortened positions: known zero */
-			for (i = 0; i < mc->xs; i++)
-				full_llr[i] = 40.0;
-
-			/* Info LLRs */
-			for (i = mc->xs; i < mc->k_ldpc; i++)
-				full_llr[i] = deint[i - mc->xs];
-
-			/* Parity: insert erasures at punctured pos */
-			d_idx = mc->k_ldpc - mc->xs;
-			p_idx = 0;
-			for (i = 0; i < mc->fec_len - mc->k_ldpc; i++) {
-				if (mc->xp > 0 && p_idx < mc->xp &&
-				    i == p_idx * mc->p_period) {
-					full_llr[mc->k_ldpc + i] = 0.0;
-					p_idx++;
-				} else {
-					full_llr[mc->k_ldpc + i] =
-						deint[d_idx++];
-				}
-			}
-
-			/* Replace deint with full_llr for LDPC */
-			free(deint);
-			deint = full_llr;
 		}
+
+		free(deint);
+		deint = full_llr;
 	}
 
 	/* LDPC decode */
@@ -602,10 +622,14 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			       &iter_used) < 0)
 		ret = DVBS2X_ERR_FEC;
 		/* Continue to BCH — best-effort decode */
+#ifdef DEBUG
+	fprintf(stderr, "[dbg] ldpc iter=%u/%u\n", iter_used,
+		DVBS2X_LDPC_MAX_ITER);
+#endif
 
 	/*
-	 * BCH decode: the LDPC info word includes the xs zero prefix.
-	 * The full k_ldpc = n_bch bits form the BCH codeword.
+	 * BCH decode: the LDPC information word is xs shortening zeros
+	 * followed by the n_bch-bit BCH codeword; skip the zeros.
 	 */
 	if (dvbs2x_bch_decoder_init(&demod->bch_dec, mc) < 0) {
 		ret = DVBS2X_ERR_NOMEM;
@@ -616,10 +640,16 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 		ret = DVBS2X_ERR_NOMEM;
 		goto out;
 	}
-	memcpy(bch_cw, ldpc_out, mc->n_bch);
-	if (dvbs2x_bch_decode(&demod->bch_dec, bch_cw) < 0) {
-		ret = DVBS2X_ERR_CRC;
-		goto out;
+	memcpy(bch_cw, ldpc_out + mc->xs, mc->n_bch);
+	{
+		int bret = dvbs2x_bch_decode(&demod->bch_dec, bch_cw);
+#ifdef DEBUG
+		fprintf(stderr, "[dbg] bch ret=%d\n", bret);
+#endif
+		if (bret < 0) {
+			ret = DVBS2X_ERR_CRC;
+			goto out;
+		}
 	}
 
 	/* BB frame parse */
@@ -635,11 +665,12 @@ out:
 	free(wh_ref);
 	free(data_sym);
 	free(pilots);
-	free(despread);
+	free(sym_llr);
 	free(llr);
 	free(deint);
 	free(ldpc_out);
 	free(bch_cw);
+	dvbs2x_vlsnr_free_layout(&lay);
 	return ret;
 }
 
@@ -769,10 +800,10 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 		if (demod->modcod) {
 			unsigned int tx_sym, dfl;
 
-			frame_geometry(demod->modcod, &tx_sym, &dfl);
-			demod->expected_frame_len =
-				DVBS2X_PLHEADER_LEN +
-				DVBS2X_VLSNR_HDR_LEN + dfl;
+			if (frame_geometry(demod->modcod, &tx_sym, &dfl) == 0)
+				demod->expected_frame_len =
+					DVBS2X_PLHEADER_LEN +
+					DVBS2X_VLSNR_HDR_LEN + dfl;
 		}
 
 		/* State transitions on success */

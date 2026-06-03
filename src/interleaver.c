@@ -2,13 +2,18 @@
 /*
  * DVB-S2X VL-SNR Bit Interleaver
  *
- * For BPSK (1 bit per symbol): no interleaving needed.
- * For QPSK (2 bits per symbol): column-row interleaving with 2 columns.
+ * The DVB-S2/S2X bit interleaver only permutes bits for the higher-order
+ * constellations (8PSK and above), where each column of the FEC frame
+ * maps to one bit position of a symbol.  For BPSK and QPSK there is NO
+ * interleaving: the coded bits map directly to symbols in natural order
+ * (QPSK groups consecutive bit pairs b0,b1 into one symbol).
  *
- * Write bits column-wise into a matrix of (n_ldpc/2) rows x 2 columns,
- * then read row-wise.
+ * This matches gr-dtv dvbs2_interleaver_bb_impl: MOD_BPSK copies bits
+ * through, and MOD_QPSK packs in[consumed++], in[consumed++] into each
+ * symbol with no reordering.
  *
- * Reference: ETSI EN 302 307-1 clause 5.3.3
+ * Reference: ETSI EN 302 307-1 clause 5.3.3 (bit interleaver applies to
+ * 8PSK/16APSK/32APSK only).
  */
 
 #include "interleaver.h"
@@ -16,72 +21,28 @@
 void dvbs2x_interleave(const struct dvbs2x_modcod *modcod,
 		       const uint8_t *input, uint8_t *output)
 {
-	unsigned int n;
-	unsigned int rows;
-	unsigned int cols;
-	unsigned int r, c;
-	unsigned int idx;
+	unsigned int n, i;
 
 	n = dvbs2x_tx_coded_bits(modcod);
 
-	if (modcod->modulation == DVBS2X_MOD_BPSK) {
-		/* No interleaving for BPSK */
-		unsigned int i;
-
-		for (i = 0; i < n; i++)
-			output[i] = input[i];
-		return;
-	}
-
-	/* QPSK: 2 columns */
-	cols = 2;
-	rows = n / cols;
-
 	/*
-	 * Write column-wise, read row-wise:
-	 * input[col * rows + row] -> output[row * cols + col]
+	 * BPSK and QPSK: no bit interleaving.  The coded bits are emitted in
+	 * natural order; QPSK simply maps each consecutive pair to one symbol
+	 * (handled by the constellation mapper), so the bit stream is
+	 * unchanged here.
 	 */
-	idx = 0;
-	for (r = 0; r < rows; r++) {
-		for (c = 0; c < cols; c++) {
-			output[idx] = input[c * rows + r];
-			idx++;
-		}
-	}
+	for (i = 0; i < n; i++)
+		output[i] = input[i];
 }
 
 void dvbs2x_deinterleave(const struct dvbs2x_modcod *modcod,
 			 const double *input, double *output)
 {
-	unsigned int n;
-	unsigned int rows;
-	unsigned int cols;
-	unsigned int r, c;
-	unsigned int idx;
+	unsigned int n, i;
 
 	n = dvbs2x_tx_coded_bits(modcod);
 
-	if (modcod->modulation == DVBS2X_MOD_BPSK) {
-		unsigned int i;
-
-		for (i = 0; i < n; i++)
-			output[i] = input[i];
-		return;
-	}
-
-	/* QPSK: 2 columns - inverse permutation */
-	cols = 2;
-	rows = n / cols;
-
-	/*
-	 * Inverse of interleave:
-	 * input[row * cols + col] -> output[col * rows + row]
-	 */
-	idx = 0;
-	for (r = 0; r < rows; r++) {
-		for (c = 0; c < cols; c++) {
-			output[c * rows + r] = input[idx];
-			idx++;
-		}
-	}
+	/* BPSK and QPSK: no deinterleaving (see dvbs2x_interleave). */
+	for (i = 0; i < n; i++)
+		output[i] = input[i];
 }

@@ -20,20 +20,29 @@
 #define BB_PRBS_INIT	0x4A80
 #define BB_CRC8_POLY	0xD5
 
+uint8_t dvbs2x_ro_from_rolloff(double rolloff)
+{
+	if (rolloff <= 0.225)
+		return DVBS2X_RO_0_20;
+	if (rolloff <= 0.30)
+		return DVBS2X_RO_0_25;
+	return DVBS2X_RO_0_35;
+}
+
 void dvbs2x_bb_frame_init(struct dvbs2x_bb_frame_ctx *ctx,
 			  const struct dvbs2x_modcod *modcod,
 			  unsigned int stream_type)
 {
 	ctx->k_bch = modcod->k_bch;
-	ctx->xs = modcod->xs;
 	ctx->stream_type = stream_type;
+	ctx->ro = DVBS2X_RO_0_35;	/* default; TX overrides per rolloff */
 
 	if (stream_type == DVBS2X_STREAM_TS) {
 		ctx->upl = 188 * 8;	/* TS packet = 188 bytes */
-		ctx->dfl = ctx->k_bch - ctx->xs - BB_HEADER_BITS;
+		ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
 	} else {
 		ctx->upl = 0;
-		ctx->dfl = ctx->k_bch - ctx->xs - BB_HEADER_BITS;
+		ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
 	}
 }
 
@@ -55,20 +64,22 @@ uint8_t dvbs2x_bb_crc8(const uint8_t *data, unsigned int len)
 }
 
 /*
- * Apply BB scrambling (PRBS x^15 + x^14 + 1)
- * Scrambles bits starting after the BB header CRC.
+ * Apply BB scrambling (PRBS x^15 + x^14 + 1), matching the gr-dtv
+ * dvb_bbscrambler init_bb_randomiser() generator bit-for-bit:
+ *   sr = 0x4A80; b = (sr ^ (sr >> 1)) & 1; sr >>= 1; if (b) sr |= 0x4000;
  */
 static void bb_scramble(uint8_t *frame, unsigned int len)
 {
-	uint16_t reg = BB_PRBS_INIT;
+	uint16_t sr = BB_PRBS_INIT;
 	unsigned int i;
-	uint8_t prbs_bit;
+	uint8_t b;
 
 	for (i = 0; i < len; i++) {
-		prbs_bit = ((reg >> 14) ^ (reg >> 13)) & 1;
-		frame[i] ^= prbs_bit;
-		reg = (reg << 1) | prbs_bit;
-		reg &= 0x7FFF;
+		b = (sr ^ (sr >> 1)) & 1;
+		frame[i] ^= b;
+		sr >>= 1;
+		if (b)
+			sr |= 0x4000;
 	}
 }
 
@@ -86,15 +97,15 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	if (user_len > dfl)
 		user_len = dfl;
 
-	/* Zero prefix for LDPC shortening */
-	if (ctx->xs > 0)
-		memset(bbframe, 0, ctx->xs);
-
-	/* Build MATYPE-1 */
+	/*
+	 * Build MATYPE-1: [TS/GS][SIS/MIS][CCM/ACM][ISSYI][NPD][RO:2].
+	 * TS,SIS,CCM,ISSYI=0,NPD=0 -> 0xF0; GS -> 0x70; low 2 bits = RO.
+	 */
 	if (ctx->stream_type == DVBS2X_STREAM_TS)
-		matype1 = 0xF0;	/* TS, SIS, CCM, ISSYI=0, NPD=0 */
+		matype1 = 0xF0;
 	else
-		matype1 = 0x70;	/* GS, SIS, CCM */
+		matype1 = 0x70;
+	matype1 |= ctx->ro & 0x03;
 
 	/* Assemble header bytes */
 	header_bytes[0] = matype1;
@@ -108,8 +119,8 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	header_bytes[8] = 0x00;		/* SYNCD low */
 	header_bytes[9] = dvbs2x_bb_crc8(header_bytes, 9);
 
-	/* Convert header to bits (placed after xs zero prefix) */
-	bit_idx = ctx->xs;
+	/* Convert header to bits at the start of the BB frame */
+	bit_idx = 0;
 	for (i = 0; i < DVBS2X_BB_HEADER_LEN; i++) {
 		unsigned int b;
 
@@ -125,11 +136,8 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	for (i = user_len; i < dfl; i++)
 		bbframe[bit_idx + i] = 0;
 
-	/*
-	 * Apply BB scrambling after the shortened prefix.
-	 * The first xs bits must remain zero for LDPC shortening.
-	 */
-	bb_scramble(bbframe + ctx->xs, ctx->k_bch - ctx->xs);
+	/* Scramble the whole BB frame (header + data field) */
+	bb_scramble(bbframe, ctx->k_bch);
 
 	return 0;
 }
@@ -145,13 +153,13 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 	uint8_t crc;
 	uint16_t dfl;
 
-	/* Copy and descramble (skip shortened prefix) */
+	/* Copy and descramble the BB frame */
 	for (i = 0; i < ctx->k_bch; i++)
 		descrambled[i] = bbframe[i];
-	bb_scramble(descrambled + ctx->xs, ctx->k_bch - ctx->xs);
+	bb_scramble(descrambled, ctx->k_bch);
 
-	/* Extract header bytes from bits (after xs zero prefix) */
-	bit_idx = ctx->xs;
+	/* Extract header bytes from the start of the frame */
+	bit_idx = 0;
 	for (i = 0; i < DVBS2X_BB_HEADER_LEN; i++) {
 		unsigned int b;
 
@@ -168,11 +176,11 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 
 	/* Extract DFL */
 	dfl = ((uint16_t)header_bytes[4] << 8) | header_bytes[5];
-	if (dfl > ctx->k_bch - ctx->xs - BB_HEADER_BITS)
-		dfl = ctx->k_bch - ctx->xs - BB_HEADER_BITS;
+	if (dfl > ctx->k_bch - BB_HEADER_BITS)
+		dfl = ctx->k_bch - BB_HEADER_BITS;
 
 	/* Extract user data */
-	bit_idx = ctx->xs + BB_HEADER_BITS;
+	bit_idx = BB_HEADER_BITS;
 	for (i = 0; i < dfl; i++)
 		user_data[i] = descrambled[bit_idx + i];
 

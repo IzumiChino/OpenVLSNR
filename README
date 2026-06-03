@@ -151,7 +151,7 @@ All functions return 0 on success, -1 on error unless noted.
 
   user_data	Input bit array (uint8_t, one bit per byte, 0/1).
   user_bits	Number of user data bits.  Maximum per frame:
-		mc->k_bch - mc->xs - 80.
+		mc->k_bch - 80.
   output	Caller-allocated buffer for baseband IQ samples.
   out_len	Number of output samples produced.
 
@@ -240,7 +240,7 @@ All functions return 0 on success, -1 on error unless noted.
 	mc->code_rate_num/den	Code rate fraction
 	mc->has_spread		Spreading factor (0 or 1)
 
-  User data capacity:  mc->k_bch - mc->xs - 80  bits.
+  User data capacity:  mc->k_bch - 80  bits.
   Transmitted coded bits:  dvbs2x_tx_coded_bits(mc).
 
 
@@ -286,7 +286,7 @@ Minimal Example
 		dvbs2x_demodulator_init(&demod, 0.35, 2, 0);
 
 		mc = dvbs2x_vlsnr_get_modcod(5);
-		tx_bits = mc->k_bch - mc->xs - 80;
+		tx_bits = mc->k_bch - 80;
 
 		tx_data = calloc(tx_bits, 1);
 		rx_data = calloc(mc->k_bch, 1);

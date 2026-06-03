@@ -2,51 +2,29 @@
 /*
  * DVB-S2X Physical Layer Scrambler
  *
- * Gold sequence generation using two 18-bit LFSRs:
- *   x sequence: x^18 + x^7 + 1 (polynomial 0x20080)
- *   y sequence: x^18 + x^5 + x^2 + x + 1 (polynomial 0x20027)
- *
- * The Gold code index n initializes the y-register to the state
- * obtained after clocking the all-ones initial state n times.
- *
- * Two consecutive Gold sequence bits (R0, R1) determine the
- * scrambling rotation applied to each symbol:
- *   (0,0) -> exp(j*0)     = +1
- *   (0,1) -> exp(j*pi/2)  = +j
- *   (1,0) -> exp(j*pi)    = -1
- *   (1,1) -> exp(j*3pi/2) = -j
+ * Two 18-bit LFSRs (x and y) combined as a Gold code produce a 2-bit
+ * value Rn per symbol, used to (de)scramble the PL frame data field.
+ * The generator matches ETSI EN 302 307-1 clause 5.5.4 bit-for-bit (the
+ * same arithmetic used by GNU Radio gr-dtv build_symbol_scrambler_table).
  *
  * Reference: ETSI EN 302 307-1 clause 5.5.4
  */
 
 #include "scrambler.h"
 
-/* LFSR feedback tap masks (bit positions for XOR) */
-#define X_POLY_TAPS	((1u << 7) | (1u << 0))   /* x^7 + 1 */
-#define Y_POLY_TAPS	((1u << 5) | (1u << 2) | (1u << 1) | (1u << 0))
+#define LFSR_MSB	0x20000u	/* bit 17 reseed position */
 
-#define LFSR_MASK	((1u << 18) - 1)
-
-static inline unsigned int lfsr_x_step(uint32_t *reg)
+/* Parity (XOR of bits) of the 18-bit value (a & b). */
+static inline unsigned int parity_chk(uint32_t a, uint32_t b)
 {
-	unsigned int out;
-	unsigned int fb;
+	uint32_t v = a & b;
 
-	out = (*reg >> 17) & 1;
-	fb = ((*reg >> 17) ^ (*reg >> 6)) & 1;
-	*reg = ((*reg << 1) | fb) & LFSR_MASK;
-	return out;
-}
-
-static inline unsigned int lfsr_y_step(uint32_t *reg)
-{
-	unsigned int out;
-	unsigned int fb;
-
-	out = (*reg >> 17) & 1;
-	fb = ((*reg >> 17) ^ (*reg >> 4) ^ (*reg >> 1) ^ (*reg >> 0)) & 1;
-	*reg = ((*reg << 1) | fb) & LFSR_MASK;
-	return out;
+	v ^= v >> 16;
+	v ^= v >> 8;
+	v ^= v >> 4;
+	v ^= v >> 2;
+	v ^= v >> 1;
+	return v & 1u;
 }
 
 void dvbs2x_scrambler_init(struct dvbs2x_scrambler *scr,
@@ -55,14 +33,17 @@ void dvbs2x_scrambler_init(struct dvbs2x_scrambler *scr,
 	unsigned int i;
 
 	scr->gold_idx = gold_idx;
+	scr->x_reg = 0x00001u;
+	scr->y_reg = 0x3FFFFu;
 
-	/* x-register always starts at all ones */
-	scr->x_reg = LFSR_MASK;
+	/* Gold code: clock the x register gold_idx times (xb tap). */
+	for (i = 0; i < gold_idx; i++) {
+		unsigned int xb = parity_chk(scr->x_reg, 0x0081u);
 
-	/* y-register: start at all ones, then advance gold_idx steps */
-	scr->y_reg = LFSR_MASK;
-	for (i = 0; i < gold_idx; i++)
-		lfsr_y_step(&scr->y_reg);
+		scr->x_reg >>= 1;
+		if (xb)
+			scr->x_reg |= LFSR_MSB;
+	}
 }
 
 void dvbs2x_scrambler_reset(struct dvbs2x_scrambler *scr)
@@ -70,49 +51,127 @@ void dvbs2x_scrambler_reset(struct dvbs2x_scrambler *scr)
 	dvbs2x_scrambler_init(scr, scr->gold_idx);
 }
 
-/*
- * Generate next scrambling rotation.
- * Returns complex multiplier as (i, q) pair.
- */
-static void scrambler_next(struct dvbs2x_scrambler *scr,
-			   double *si, double *sq)
+unsigned int dvbs2x_scrambler_next_rn(struct dvbs2x_scrambler *scr)
 {
-	unsigned int r0, r1;
-	unsigned int x0, x1, y0, y1;
+	unsigned int xa, xb, xc, ya, yb, yc, zna, znb;
 
-	/* Generate two Gold sequence bits */
-	x0 = lfsr_x_step(&scr->x_reg);
-	y0 = lfsr_y_step(&scr->y_reg);
-	r0 = x0 ^ y0;
+	xa = parity_chk(scr->x_reg, 0x8050u);
+	xb = parity_chk(scr->x_reg, 0x0081u);
+	xc = scr->x_reg & 1u;
+	scr->x_reg >>= 1;
+	if (xb)
+		scr->x_reg |= LFSR_MSB;
 
-	x1 = lfsr_x_step(&scr->x_reg);
-	y1 = lfsr_y_step(&scr->y_reg);
-	r1 = x1 ^ y1;
+	ya = parity_chk(scr->y_reg, 0x04A1u);
+	yb = parity_chk(scr->y_reg, 0xFF60u);
+	yc = scr->y_reg & 1u;
+	scr->y_reg >>= 1;
+	if (ya)
+		scr->y_reg |= LFSR_MSB;
 
-	/*
-	 * Map (R0, R1) to complex rotation:
-	 *   (0,0) -> +1 + 0j
-	 *   (0,1) ->  0 + 1j
-	 *   (1,0) -> -1 + 0j
-	 *   (1,1) ->  0 - 1j
-	 */
-	switch ((r0 << 1) | r1) {
-	case 0:
-		*si = 1.0;
-		*sq = 0.0;
+	zna = xc ^ yc;
+	znb = xa ^ yb;
+	return (znb << 1) | zna;
+}
+
+void dvbs2x_scrambler_seek(struct dvbs2x_scrambler *scr, unsigned int n)
+{
+	unsigned int i;
+
+	for (i = 0; i < n; i++)
+		dvbs2x_scrambler_next_rn(scr);
+}
+
+/* Apply the forward 4-phase rotation for Rn to one symbol. */
+static inline void rot_fwd(struct dvbs2x_complex *s, unsigned int rn)
+{
+	double ti, tq;
+
+	switch (rn) {
+	case 1:				/* +90 deg: j * s */
+		ti = -s->q;
+		tq = s->i;
 		break;
-	case 1:
-		*si = 0.0;
-		*sq = 1.0;
+	case 2:				/* 180 deg: -s */
+		ti = -s->i;
+		tq = -s->q;
 		break;
-	case 2:
-		*si = -1.0;
-		*sq = 0.0;
+	case 3:				/* -90 deg: -j * s */
+		ti = s->q;
+		tq = -s->i;
 		break;
-	case 3:
-		*si = 0.0;
-		*sq = -1.0;
+	default:			/* 0 deg */
+		return;
+	}
+	s->i = ti;
+	s->q = tq;
+}
+
+/* Apply the inverse 4-phase rotation for Rn to one symbol. */
+static inline void rot_inv(struct dvbs2x_complex *s, unsigned int rn)
+{
+	double ti, tq;
+
+	switch (rn) {
+	case 1:				/* inverse of +90: -j * s */
+		ti = s->q;
+		tq = -s->i;
 		break;
+	case 2:				/* 180 deg: -s */
+		ti = -s->i;
+		tq = -s->q;
+		break;
+	case 3:				/* inverse of -90: j * s */
+		ti = -s->q;
+		tq = s->i;
+		break;
+	default:
+		return;
+	}
+	s->i = ti;
+	s->q = tq;
+}
+
+void dvbs2x_scramble_field(struct dvbs2x_scrambler *scr,
+			   struct dvbs2x_complex *symbols,
+			   unsigned int len,
+			   const uint8_t *is_pilot,
+			   int is_qpsk)
+{
+	unsigned int n;
+
+	for (n = 0; n < len; n++) {
+		unsigned int rn = dvbs2x_scrambler_next_rn(scr);
+		int four_phase = is_qpsk || (is_pilot && is_pilot[n]);
+
+		if (four_phase) {
+			rot_fwd(&symbols[n], rn);
+		} else if (rn & 1) {
+			/* non-QPSK data: real +/-1 only */
+			symbols[n].i = -symbols[n].i;
+			symbols[n].q = -symbols[n].q;
+		}
+	}
+}
+
+void dvbs2x_descramble_field(struct dvbs2x_scrambler *scr,
+			     struct dvbs2x_complex *symbols,
+			     unsigned int len,
+			     const uint8_t *is_pilot,
+			     int is_qpsk)
+{
+	unsigned int n;
+
+	for (n = 0; n < len; n++) {
+		unsigned int rn = dvbs2x_scrambler_next_rn(scr);
+		int four_phase = is_qpsk || (is_pilot && is_pilot[n]);
+
+		if (four_phase) {
+			rot_inv(&symbols[n], rn);
+		} else if (rn & 1) {
+			symbols[n].i = -symbols[n].i;
+			symbols[n].q = -symbols[n].q;
+		}
 	}
 }
 
@@ -120,36 +179,12 @@ void dvbs2x_scramble(struct dvbs2x_scrambler *scr,
 		     struct dvbs2x_complex *symbols,
 		     unsigned int len)
 {
-	unsigned int n;
-	double si, sq;
-	double ti, tq;
-
-	for (n = 0; n < len; n++) {
-		scrambler_next(scr, &si, &sq);
-
-		/* Complex multiply: symbol * scramble */
-		ti = symbols[n].i * si - symbols[n].q * sq;
-		tq = symbols[n].i * sq + symbols[n].q * si;
-		symbols[n].i = ti;
-		symbols[n].q = tq;
-	}
+	dvbs2x_scramble_field(scr, symbols, len, NULL, 1);
 }
 
 void dvbs2x_descramble(struct dvbs2x_scrambler *scr,
 		       struct dvbs2x_complex *symbols,
 		       unsigned int len)
 {
-	unsigned int n;
-	double si, sq;
-	double ti, tq;
-
-	for (n = 0; n < len; n++) {
-		scrambler_next(scr, &si, &sq);
-
-		/* Complex multiply: symbol * conj(scramble) */
-		ti = symbols[n].i * si + symbols[n].q * sq;
-		tq = -symbols[n].i * sq + symbols[n].q * si;
-		symbols[n].i = ti;
-		symbols[n].q = tq;
-	}
+	dvbs2x_descramble_field(scr, symbols, len, NULL, 1);
 }

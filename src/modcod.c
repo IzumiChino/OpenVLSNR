@@ -21,8 +21,10 @@
  *
  * LDPC Q factor = (n_ldpc - k_ldpc) / 360
  *
- * k_ldpc = n_bch (BCH output feeds LDPC input)
  * n_bch = k_bch + bch_parity_bits
+ * k_ldpc = xs + n_bch: the BCH codeword is prepended with xs shortening
+ * zeros (not transmitted) to form the LDPC information word, exactly as
+ * in ETSI EN 302 307 and gr-dtv.  For modes with xs = 0, k_ldpc = n_bch.
  */
 static const struct dvbs2x_modcod
 vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] = {
@@ -58,8 +60,8 @@ vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] = {
 		.has_spread	= 0,
 		.set		= DVBS2X_VLSNR_SET1,
 		.pls_code	= DVBS2X_PLS_VLSNR_SET1,
-		.k_bch		= 6300,
-		.n_bch		= 6480,
+		.k_bch		= 5660,
+		.n_bch		= 5840,
 		.bch_t		= 12,
 		.k_ldpc		= 6480,
 		.q_ldpc		= 72,
@@ -121,8 +123,8 @@ vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] = {
 		.has_spread	= 1,
 		.set		= DVBS2X_VLSNR_SET1,
 		.pls_code	= DVBS2X_PLS_VLSNR_SET1,
-		.k_bch		= 3072,
-		.n_bch		= 3240,
+		.k_bch		= 2512,
+		.n_bch		= 2680,
 		.bch_t		= 12,
 		.k_ldpc		= 3240,
 		.q_ldpc		= 36,

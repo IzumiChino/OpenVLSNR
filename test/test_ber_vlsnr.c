@@ -27,13 +27,6 @@
 #include "modulator.h"
 #include "interleaver.h"
 
-extern void dvbs2x_demod_pi2bpsk(const struct dvbs2x_complex *symbols,
-				 double *llr, unsigned int len,
-				 double noise_var);
-extern void dvbs2x_demod_despread(const struct dvbs2x_complex *in,
-				  struct dvbs2x_complex *out,
-				  unsigned int out_len);
-
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -145,11 +138,11 @@ static double test_ber_vlsnr(unsigned int modcod_idx, double esn0_db,
 		else
 			num_tx_sym = num_data_sym;
 
-		tx_sym = calloc(num_data_sym, sizeof(struct dvbs2x_complex));
+		tx_sym = calloc(num_tx_sym, sizeof(struct dvbs2x_complex));
 		spread_sym = NULL;
 		rx_sym = NULL;
 
-		/* Modulate transmitted bits as pi/2-BPSK */
+		/* Modulate transmitted bits as pi/2-BPSK (period-2). */
 		{
 			uint8_t *tx_bits = calloc(num_data_sym, 1);
 			unsigned int idx = 0;
@@ -164,19 +157,21 @@ static double test_ber_vlsnr(unsigned int modcod_idx, double esn0_db,
 						codeword[mc->k_ldpc + i];
 			}
 
-			dvbs2x_mod_pi2bpsk(tx_bits, tx_sym, num_data_sym);
+			if (mc->has_spread) {
+				/* SF2: duplicate bits, then period-2 map */
+				uint8_t *sp = calloc(num_tx_sym, 1);
+
+				dvbs2x_mod_spread_bits(tx_bits, sp,
+						       num_data_sym);
+				dvbs2x_mod_pi2bpsk(sp, tx_sym, num_tx_sym);
+				free(sp);
+			} else {
+				dvbs2x_mod_pi2bpsk(tx_bits, tx_sym,
+						   num_tx_sym);
+			}
 			free(tx_bits);
 		}
-
-		/* Apply spreading if needed */
-		if (mc->has_spread) {
-			spread_sym = calloc(num_tx_sym,
-					    sizeof(struct dvbs2x_complex));
-			dvbs2x_mod_spread(tx_sym, spread_sym, num_data_sym);
-			rx_sym = spread_sym;
-		} else {
-			rx_sym = tx_sym;
-		}
+		rx_sym = tx_sym;
 
 		/* Add AWGN */
 		for (i = 0; i < num_tx_sym; i++) {
@@ -184,19 +179,17 @@ static double test_ber_vlsnr(unsigned int modcod_idx, double esn0_db,
 			rx_sym[i].q += sigma * randn();
 		}
 
-		/* Despread if needed */
+		/* Demap (period-2); SF2 sums the per-symbol LLR pairs. */
 		if (mc->has_spread) {
-			struct dvbs2x_complex *despread;
-			double *tx_llr;
+			double *sym_llr = calloc(num_tx_sym, sizeof(double));
+			double *tx_llr = calloc(num_data_sym, sizeof(double));
 			unsigned int src = 0;
 
-			despread = calloc(num_data_sym,
-					  sizeof(struct dvbs2x_complex));
-			dvbs2x_demod_despread(rx_sym, despread, num_data_sym);
-			tx_llr = calloc(num_data_sym, sizeof(double));
-			dvbs2x_demod_pi2bpsk(despread, tx_llr, num_data_sym,
-					     noise_var / 2.0);
-			free(despread);
+			dvbs2x_demod_pi2bpsk(rx_sym, sym_llr, num_tx_sym,
+					     noise_var);
+			dvbs2x_demod_despread_llr(sym_llr, tx_llr,
+						  num_data_sym);
+			free(sym_llr);
 
 			/* Map to full codeword LLR */
 			for (i = 0; i < mc->xs; i++)

@@ -21,7 +21,7 @@
 /* Primitive polynomials - must match bch_decode.c */
 static const uint32_t prim_polys[] = {
 	[14] = 0x402B,		/* x^14 + x^5 + x^3 + x + 1 */
-	[15] = 0x8003,		/* x^15 + x + 1 */
+	[15] = 0x802D,		/* x^15 + x^5 + x^3 + x^2 + 1 */
 	[16] = 0x1002D,	/* x^16 + x^5 + x^3 + x^2 + 1 */
 };
 
