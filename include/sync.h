@@ -59,6 +59,8 @@ struct dvbs2x_afc {
 	unsigned int	frames;		/* frames accumulated */
 	int		locked;		/* convergence flag */
 	double		alpha;		/* IIR decay factor */
+	double		raw_prev;	/* previous frame's raw single-lag est */
+	unsigned int	consistent;	/* consecutive consistent raw estimates */
 };
 
 /*
