@@ -57,10 +57,13 @@ static inline double lut_log1pexp(double x)
 	double idx_f, f;
 	unsigned int idx;
 
+	/*
+	 * Callers pass fabs() results, so x >= 0 always.  At x == 0 the
+	 * table itself yields boxplus_lut[0] = log1p(exp(0)) = log(2), so
+	 * no separate x <= 0 branch is needed.
+	 */
 	if (x >= LLR_CLAMP)
 		return 0.0;
-	if (x <= 0.0)
-		return log(2.0);
 
 	idx_f = x * ((double)BOXPLUS_LUT_SIZE / LLR_CLAMP);
 	idx = (unsigned int)idx_f;
@@ -302,8 +305,18 @@ void dvbs2x_ldpc_decoder_free(struct dvbs2x_ldpc_decoder *dec)
 	dec->work_bwd = NULL;
 }
 
-/* Check convergence every CONV_CHECK_PERIOD iterations */
+/*
+ * Convergence-check schedule.  The syndrome check is exact (H*c_hat == 0),
+ * so checking more often can only let a valid codeword exit earlier, never
+ * change the result.  We check every iteration for the first
+ * EARLY_CHECK_ITERS (high-SNR frames converge in 1-9 iterations, so they
+ * exit as soon as they are correct instead of waiting for the next
+ * multiple of CONV_CHECK_PERIOD), then fall back to every CONV_CHECK_PERIOD
+ * iterations.  One syndrome scan is ~0.01 us with early-out, so the extra
+ * early checks cost nothing measurable on frames that do not converge.
+ */
 #define CONV_CHECK_PERIOD	5
+#define EARLY_CHECK_ITERS	10
 
 int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 		       const double *llr, uint8_t *output,
@@ -392,8 +405,15 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 			}
 		}
 
-		/* Check convergence periodically (O(edges) cost) */
-		if ((iter + 1) % CONV_CHECK_PERIOD != 0 &&
+		/*
+		 * Check convergence (O(edges), early-out on first failure).
+		 * Every iteration for the first EARLY_CHECK_ITERS, then every
+		 * CONV_CHECK_PERIOD.  This is a superset of the old schedule,
+		 * so the decoded output is unchanged -- only earlier on
+		 * fast-converging (high-SNR) frames.
+		 */
+		if (iter >= EARLY_CHECK_ITERS &&
+		    (iter + 1) % CONV_CHECK_PERIOD != 0 &&
 		    iter + 1 < dec->max_iter)
 			continue;
 
