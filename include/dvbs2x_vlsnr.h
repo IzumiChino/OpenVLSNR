@@ -9,6 +9,10 @@
 #ifndef DVBS2X_VLSNR_H
 #define DVBS2X_VLSNR_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "dvbs2x_types.h"
 #include "dvbs2x_modcod.h"
 #include "bch.h"
@@ -251,3 +255,8 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			     unsigned int *consumed);
 
 #endif /* DVBS2X_VLSNR_H */
+
+#ifdef __cplusplus
+}
+#endif
+
