@@ -621,7 +621,7 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	if (dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out,
 			       &iter_used) < 0)
 		ret = DVBS2X_ERR_FEC;
-		/* Continue to BCH — best-effort decode */
+		/* Continue to BCH - best-effort decode */
 #ifdef DEBUG
 	fprintf(stderr, "[dbg] ldpc iter=%u/%u\n", iter_used,
 		DVBS2X_LDPC_MAX_ITER);
