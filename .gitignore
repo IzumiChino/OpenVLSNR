@@ -1,25 +1,26 @@
-# Build artifacts
+# SPDX-License-Identifier: GPL-2.0-or-later
+#
+# Object files, libraries and other build output
+#
 *.o
 *.a
 *.so
+*.so.*
 
-# pkg-config generated file
-dvbs2x_vlsnr.pc
+# Generated pkg-config file (the template dvbs2x_vlsnr.pc.in is tracked)
+/dvbs2x_vlsnr.pc
 
-# Test binaries
-test/test_api_loopback
-test/test_ber
-test/test_ber_vlsnr
-test/test_e2e
-test/test_loopback
-test/test_modulator
-test/test_rf_ber
-test/test_stream
-test/test_fuzz
+# Out-of-tree build directory
+/build/
 
-# Test Tools
-tools/
+# Local verification tools and helper scripts, not part of the library
+/tools/
+/check_full_style.sh
+/streaming/netdev_audit.sh
 
-# Editor
-*.swp
-*~
+# Compiled test binaries; the matching *.c sources are tracked
+/test/test_*
+!/test/test_*.c
+
+# Streaming layer test programs are local, not part of the library
+/streaming/test/

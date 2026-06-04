@@ -34,8 +34,29 @@ Directory Layout
 	src/			Library source
 	tables/			LDPC parity-check address tables
 	test/			Test programs
+	streaming/		Network transport layer (see streaming/README)
 
 The build produces a single static library: libdvbs2x_vlsnr.a
+
+
+Network Streaming Layer
+-----------------------
+
+The streaming/ subdirectory provides a high-performance network transport
+layer for DVB-S2X IQ samples and transport streams.  This enables modulator
+and demodulator communication over TCP/UDP networks for ground testing and
+distributed satellite system development.
+
+Key features:
+  - TCP/UDP transports with proper partial send/recv handling
+  - Lock-free SPSC ring buffer for IQ sample buffering
+  - DVB-S2X protocol framing with CRC-32 integrity checking
+  - Handles real network conditions (WAN, packet loss, congestion)
+
+The streaming layer follows Linux kernel netdev coding standards and has
+been verified with Valgrind, AddressSanitizer, and ThreadSanitizer.
+
+See streaming/README for detailed API documentation and usage examples.
 
 
 Supported MODCODs

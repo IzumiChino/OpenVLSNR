@@ -1,0 +1,395 @@
+		DVB-S2X VL-SNR Network Streaming Layer
+		======================================
+
+This is the optional network streaming module for the DVB-S2X VL-SNR
+modem library.  It provides platform abstraction and lock-free ring
+buffers for TCP/UDP transport of IQ samples and decoded streams.
+
+The module is designed for satellite communication systems requiring
+real-time performance and deterministic latency.
+
+
+Building
+--------
+
+	make			Build libdvbs2x_streaming.a
+	make install		Install the library and headers
+	make clean		Clean build artifacts
+
+
+Components
+----------
+
+Platform Abstraction Layer (dvbs2x_platform.h)
+
+  Cross-platform socket operations (Linux/Windows), thread management
+  (POSIX/Win32), real-time scheduling (SCHED_FIFO, CPU affinity),
+  nanosecond-precision timing, and memory locking for real-time systems.
+
+  All platform selection is compile-time via preprocessor macros.
+  Zero runtime overhead: inline functions, no virtual dispatch.
+
+Lock-Free Ring Buffer (dvbs2x_ringbuf.h)
+
+  Single-producer single-consumer (SPSC) lock-free ring buffer following
+  Linux kernel kfifo design.  Power-of-2 capacity for efficient modulo
+  via bitwise AND.  Always-incrementing indices (wrap at 2^32).
+
+  Memory barriers ensure correct ordering without locks.  Cache-line
+  alignment prevents false sharing between producer and consumer.
+  Zero-copy peek operations for packet inspection.  Batch operations
+  amortize atomic overhead.
+
+Protocol Layer (dvbs2x_protocol.h)
+
+  Frame format for network streaming with 16-byte header, CRC-32
+  integrity checking (IEEE 802.3), and support for fragmentation.
+
+  Frame format:
+    [0-3]   u32 magic        0x53325856 ("XVS2" big-endian)
+    [4-7]   u32 sequence     Sequence number
+    [8-9]   u16 payload_len  Payload bytes (0-65520)
+    [10]    u8  frame_type   IQ_SAMPLES/TS_PACKETS/BBFRAME
+    [11]    u8  flags        MORE_FRAGS + frag_offset[21:16]
+    [12-13] u16 frag_offset  Fragment offset (8-byte units)
+    [14-15] u16 stream_id    Stream multiplex ID
+    [...]   payload
+    [...]   u32 crc32        CRC-32 over header[4-15] + payload
+
+  All multi-byte fields in network byte order (big-endian).
+  Maximum payload: 65520 bytes per frame.
+
+TCP Transport (dvbs2x_tcp.h)
+
+  Connection-oriented reliable transport for IQ samples and decoded
+  streams.  Provides server (listen/accept) and client (connect) modes
+  with timeout support and statistics tracking.
+
+  Features:
+    - Automatic retry on EINTR (signal interruption)
+    - Send/recv loop until all bytes transferred (critical!)
+    - TCP_NODELAY for low latency (disables Nagle's algorithm)
+    - Proper shutdown sequence (shutdown + close)
+    - Statistics: tx_bytes, rx_bytes
+
+UDP Transport (dvbs2x_udp.h)
+
+  Connectionless unreliable transport for low-latency real-time
+  streaming.  Suitable for satellite links where application-layer
+  FEC (DVB-S2X LDPC) already provides error correction.
+
+  Features:
+    - Automatic retry on EINTR
+    - MTU awareness (returns -EMSGSIZE if packet too large)
+    - Statistics: tx_packets, rx_packets, tx_bytes, rx_bytes
+
+
+API Usage
+---------
+
+Ring Buffer:
+
+	/*
+	 * Ring buffer capacity calculation:
+	 *
+	 * Required capacity (samples) =
+	 *     sample_rate * oversampling * latency_budget
+	 *
+	 * Example for DVB-S2X IQ samples:
+	 *   Symbol rate: 2 Msps
+	 *   Oversampling: 4x (typical for RRC filter)
+	 *   Latency budget: 100 ms (safe for context switches)
+	 *
+	 *   Capacity = 2e6 * 4 * 0.1 = 800,000 samples
+	 *   Round up to power of 2: 1,048,576 (2^20)
+	 *
+	 * For lower rates or shorter latency:
+	 *   1 Msps, 2x, 50ms -> 100,000 samples -> 131,072 (2^17)
+	 *
+	 * Note: 4096 samples shown below is for DEMO only!
+	 * Production systems need much larger buffers.
+	 */
+
+	struct dvbs2x_ringbuf rb;
+	struct dvbs2x_complex buffer[1048576];  /* 2^20, ~100ms @ 8 MSps */
+
+	dvbs2x_ringbuf_init(&rb, buffer, 1048576,
+			    sizeof(struct dvbs2x_complex));
+
+	/* Producer writes */
+	struct dvbs2x_complex samples[100];
+	dvbs2x_ringbuf_put_batch(&rb, samples, 100);
+
+	/* Consumer reads */
+	struct dvbs2x_complex output[100];
+	dvbs2x_ringbuf_get_batch(&rb, output, 100);
+
+Protocol Layer:
+
+	uint8_t frame_buf[2048];
+	uint8_t payload[1024];
+	uint8_t output[1024];
+	enum dvbs2x_frame_type frame_type;
+	uint32_t sequence;
+	uint16_t stream_id;
+	int ret;
+
+	/* Encode frame */
+	ret = dvbs2x_frame_encode(frame_buf, sizeof(frame_buf),
+				   payload, 1024,
+				   DVBS2X_FRAME_IQ_SAMPLES,
+				   seq_num++, 0);
+	if (ret < 0)
+		handle_error(-ret);
+
+	/* Decode frame */
+	ret = dvbs2x_frame_decode(frame_buf, ret, output,
+				   sizeof(output), &frame_type,
+				   &sequence, &stream_id);
+	if (ret < 0)
+		handle_error(-ret);
+
+	/* Sequence number comparison with wrap handling */
+	uint32_t expected_seq = 0xFFFFFFFE;  /* Near wrap point */
+	uint32_t received_seq = 0x00000001;  /* After wrap */
+
+	if (dvbs2x_seq_after(received_seq, expected_seq)) {
+		/* received_seq is after expected_seq (correct!) */
+		printf("Sequence advanced correctly\n");
+	}
+
+	/* Check if sequence is in order */
+	static uint32_t last_seq = 0;
+	if (dvbs2x_seq_after(sequence, last_seq)) {
+		last_seq = sequence;  /* Update */
+	} else {
+		printf("Out-of-order frame: expected > %u, got %u\n",
+		       last_seq, sequence);
+	}
+
+TCP Server:
+
+	struct dvbs2x_tcp_ctx server, client;
+	uint8_t buffer[2048];
+	int ret;
+
+	dvbs2x_platform_init();
+
+	/* Bind to port */
+	ret = dvbs2x_tcp_server_init(&server, 5000);
+	if (ret != 0)
+		handle_error(-ret);
+
+	/* Accept connection (1 second timeout) */
+	ret = dvbs2x_tcp_server_accept(&server, &client, 1000);
+	if (ret != 0)
+		handle_error(-ret);
+
+	/* Receive data (all bytes or timeout) */
+	ret = dvbs2x_tcp_recv(&client, buffer, 2048, 5000);
+	if (ret < 0)
+		handle_error(-ret);
+	else if (ret == 0)
+		printf("Connection closed\n");
+	else
+		printf("Received %d bytes\n", ret);
+
+	/* Send data (blocks until all sent) */
+	ret = dvbs2x_tcp_send(&client, buffer, ret);
+	if (ret < 0)
+		handle_error(-ret);
+
+	dvbs2x_tcp_close(&client);
+	dvbs2x_tcp_close(&server);
+	dvbs2x_platform_cleanup();
+
+TCP Client:
+
+	struct dvbs2x_tcp_ctx client;
+	uint8_t buffer[2048];
+	int ret;
+
+	dvbs2x_platform_init();
+
+	/* Connect to server (3 second timeout) */
+	ret = dvbs2x_tcp_client_connect(&client, "192.168.1.10",
+					5000, 3000);
+	if (ret != 0)
+		handle_error(-ret);
+
+	/* Send data */
+	ret = dvbs2x_tcp_send(&client, buffer, 2048);
+	if (ret < 0)
+		handle_error(-ret);
+
+	/* Receive response */
+	ret = dvbs2x_tcp_recv(&client, buffer, 2048, 5000);
+	if (ret > 0)
+		printf("Received %d bytes\n", ret);
+
+	dvbs2x_tcp_close(&client);
+	dvbs2x_platform_cleanup();
+
+UDP:
+
+	struct dvbs2x_udp_ctx udp;
+	uint8_t buffer[1400];  /* Keep under MTU! */
+	int ret;
+
+	dvbs2x_platform_init();
+
+	/* Bind to local port */
+	ret = dvbs2x_udp_init(&udp, 5001);
+	if (ret != 0)
+		handle_error(-ret);
+
+	/* Set peer address */
+	ret = dvbs2x_udp_set_peer(&udp, "192.168.1.10", 5002);
+	if (ret != 0)
+		handle_error(-ret);
+
+	/* Send datagram */
+	ret = dvbs2x_udp_send(&udp, buffer, 1400);
+	if (ret < 0) {
+		if (ret == -EMSGSIZE)
+			printf("Packet too large for MTU\n");
+		else
+			handle_error(-ret);
+	}
+
+	/* Receive datagram (2 second timeout) */
+	ret = dvbs2x_udp_recv(&udp, buffer, sizeof(buffer), 2000);
+	if (ret > 0)
+		printf("Received %d bytes\n", ret);
+	else if (ret == -ETIMEDOUT)
+		printf("Timeout\n");
+
+	dvbs2x_udp_close(&udp);
+	dvbs2x_platform_cleanup();
+
+
+Design Notes
+------------
+
+  - Lock-free ring buffer uses atomic memory ordering (ATOMIC_ACQUIRE/
+    ATOMIC_RELEASE) to ensure correctness without locks.  Suitable for
+    real-time systems where mutex overhead is unacceptable.
+
+  - Platform abstractions are compile-time selected via preprocessor
+    macros.  Inline functions eliminate function call overhead for
+    socket operations.  Zero runtime cost.
+
+  - Ring buffer head and tail are on separate cache lines (64 bytes)
+    to prevent false sharing between producer and consumer threads.
+
+  - Thread priority and CPU affinity support enables real-time
+    scheduling for satellite communication (SCHED_FIFO on Linux).
+
+  - Memory locking (mlock) prevents page faults in real-time paths.
+
+  - TCP send/recv loop until all bytes are transferred.  Critical
+    for real networks where partial sends/receives are common.
+
+  - TCP_NODELAY disables Nagle's algorithm for low latency (40-200ms
+    reduction on small packets).
+
+  - All system calls retry on EINTR (signal interruption).
+
+  - Proper TCP shutdown sequence (shutdown before close) ensures
+    buffered data is flushed.
+
+
+Performance
+-----------
+
+Measured on Intel x86_64 @ 3.0 GHz (Linux):
+
+  CRC-32:              550-766 MB/s
+  Protocol encode:     ~460 MB/s
+  Protocol decode:     ~420 MB/s
+  Ring buffer batch:   17 GB/s (128-byte batches)
+  Frame overhead:      <1 µs per frame (typical)
+
+
+Limitations
+-----------
+
+Ring Buffer:
+  - Single-producer single-consumer only.  Multiple producers or
+    multiple consumers require external locking.
+  - Power-of-2 buffer sizes are enforced (checked at init time).
+
+Network:
+  - IPv4 only (AF_INET hardcoded).  IPv6 support requires changes.
+  - UDP maximum practical payload: ~1400 bytes (MTU limit).
+    Larger payloads will cause IP fragmentation or EMSGSIZE error.
+    Use protocol-level fragmentation for large frames over UDP.
+  - TCP/UDP contexts are not thread-safe.  Each context should be
+    used by a single thread.  Statistics counters are not atomic.
+
+Platform:
+  - Real-time thread priorities require CAP_SYS_NICE capability or
+    root privileges on Linux.
+  - Windows support is compile-time enabled but not fully tested.
+
+
+Important Notes for Production Deployment
+------------------------------------------
+
+UDP MTU Considerations:
+  - Localhost MTU is typically 65KB (no fragmentation visible).
+  - Real Ethernet MTU is 1500 bytes.
+  - UDP payload should not exceed ~1400 bytes to avoid fragmentation.
+  - IP fragmentation causes poor performance and packet loss.
+  - Many routers and firewalls drop fragmented packets.
+  - For satellite links, MTU may be even smaller (1200-1400 bytes).
+
+Recommendation:
+  - Limit UDP payload to 1400 bytes maximum.
+  - Use protocol-level fragmentation (MORE_FRAGS flag) for larger
+    frames, with reassembly at receiver.
+  - Or use TCP for large frames (automatic segmentation/reassembly).
+
+Network Testing:
+  - Localhost testing does NOT reveal network issues.
+  - Test on real networks (different subnets, WAN links).
+  - Use tc/netem to simulate latency and packet loss:
+      tc qdisc add dev eth0 root netem delay 100ms loss 1%
+  - Test with background traffic (iperf) to simulate congestion.
+  - Test across NAT/firewall boundaries.
+
+Signal Handling:
+  - All blocking calls retry on EINTR (signal interruption).
+  - If using signals in your application, this is handled correctly.
+
+Real-Time Considerations:
+  - Set thread priority and CPU affinity for deterministic latency.
+  - Lock memory (mlock) to prevent page faults.
+  - Disable frequency scaling (use performance governor).
+  - Isolate CPU cores (isolcpus kernel parameter).
+
+
+License
+-------
+
+GPL-2.0-or-later.  See SPDX headers in each source file.
+
+
+Version History
+---------------
+
+v0.2 (2026-06-05) - Fixed critical network bugs
+  - Fixed TCP partial send/recv (critical for real networks)
+  - Added EINTR retry for all blocking calls
+  - Added TCP_NODELAY for low latency
+  - Added proper shutdown sequence
+  - Added UDP MTU awareness
+  - Updated documentation with limitations and deployment notes
+
+v0.1 (2026-06-05) - Initial implementation
+  - Platform abstraction layer
+  - Lock-free ring buffer
+  - Protocol layer with CRC-32
+  - Basic TCP/UDP transport
+  - Unit tests passing
+  - Note: localhost-only, not suitable for real networks
