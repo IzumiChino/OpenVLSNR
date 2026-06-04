@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * DVB-S2X VL-SNR Multi-Frame AFC (Automatic Frequency Control)
  *
@@ -60,9 +60,11 @@ void dvbs2x_afc_update(struct dvbs2x_afc *afc,
 			unsigned int wh_start,
 			const struct dvbs2x_complex *wh_ref)
 {
-	double ri = 0.0, rq = 0.0;
+	double ri = 0.0;
+	double rq = 0.0;
 	double zi_prev, zq_prev, zi, zq;
-	double f_raw, step;
+	double f_raw;
+	double step;
 	unsigned int n;
 
 	/*

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * DVB-S2X VL-SNR Loopback Test
  *
@@ -108,9 +108,15 @@ static int test_loopback_modcod(unsigned int modcod_idx)
 	else
 		printf("    FAIL\n");
 
-	free(user_bits); free(bch_out); free(ldpc_out); free(interleaved);
-	free(symbols); free(llr); free(deinterleaved);
-	free(ldpc_decoded); free(bch_decoded);
+	free(user_bits);
+	free(bch_out);
+	free(ldpc_out);
+	free(interleaved);
+	free(symbols);
+	free(llr);
+	free(deinterleaved);
+	free(ldpc_decoded);
+	free(bch_decoded);
 	dvbs2x_ldpc_decoder_free(&ldpc_dec);
 	return 0;
 }

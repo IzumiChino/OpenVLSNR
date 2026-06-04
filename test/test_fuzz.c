@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-or-later
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /*
  * DVB-S2X VL-SNR Robustness Test
  *
@@ -23,7 +23,9 @@ int main(int argc, char *argv[])
 	uint8_t *out;
 	unsigned int iterations = FUZZ_ITERATIONS;
 	unsigned int i, n;
-	unsigned int nosync = 0, other = 0, ok = 0;
+	unsigned int nosync = 0;
+	unsigned int other = 0;
+	unsigned int ok = 0;
 	int ret;
 
 	if (argc >= 2)
@@ -45,13 +47,17 @@ int main(int argc, char *argv[])
 	       iterations);
 
 	for (i = 0; i < iterations; i++) {
-		unsigned int len = (unsigned int)(rand() % MAX_BUF_LEN) + 100;
+		unsigned int len;
+
+		len = (unsigned int)(rand() % (MAX_BUF_LEN - 100)) + 100;
 		unsigned int rec_len = 0;
 
 		/* Fill with random IQ */
 		for (n = 0; n < len; n++) {
-			buf[n].i = ((double)rand() / RAND_MAX) * 2.0 - 1.0;
-			buf[n].q = ((double)rand() / RAND_MAX) * 2.0 - 1.0;
+			buf[n].i = ((double)rand() / RAND_MAX) * 2.0 -
+				   1.0;
+			buf[n].q = ((double)rand() / RAND_MAX) * 2.0 -
+				   1.0;
 		}
 
 		ret = dvbs2x_demodulate(&demod, buf, len, out, &rec_len);
