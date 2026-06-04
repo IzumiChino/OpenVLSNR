@@ -9,7 +9,13 @@
 
 #include "dvbs2x_vlsnr.h"
 
-static const char version_str[] = "1.0.0";
+#define DVBS2X_STR_(x) #x
+#define DVBS2X_STR(x)  DVBS2X_STR_(x)
+
+static const char version_str[] =
+	DVBS2X_STR(DVBS2X_VERSION_MAJOR) "."
+	DVBS2X_STR(DVBS2X_VERSION_MINOR) "."
+	DVBS2X_STR(DVBS2X_VERSION_PATCH);
 
 /*
  * External init hooks for static tables in other modules.

@@ -9,7 +9,7 @@ CFLAGS		+= -Iinclude
 LDFLAGS		= -lm
 
 # Version
-VERSION		= 1.0.0
+VERSION		= 3.0.0
 
 # Install paths (override on the command line, e.g. make install PREFIX=/usr)
 PREFIX		?= /usr/local

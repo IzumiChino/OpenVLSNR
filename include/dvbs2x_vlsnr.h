@@ -28,7 +28,7 @@ extern "C" {
 #include "sync.h"
 
 /* Library version */
-#define DVBS2X_VERSION_MAJOR	1
+#define DVBS2X_VERSION_MAJOR	3
 #define DVBS2X_VERSION_MINOR	0
 #define DVBS2X_VERSION_PATCH	0
 

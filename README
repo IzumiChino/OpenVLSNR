@@ -281,7 +281,7 @@ All functions return 0 on success, -1 on error unless noted.
 
 	printf("libdvbs2x_vlsnr %s\n", dvbs2x_version_string());
 
-  Returns "major.minor.patch" (currently "1.0.0").
+  Returns "major.minor.patch" (currently "3.0.0").
   Compile-time macros: DVBS2X_VERSION_MAJOR/MINOR/PATCH.
 
 
