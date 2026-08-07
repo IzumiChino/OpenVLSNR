@@ -3,8 +3,8 @@
 
 This is a C implementation of the DVB-S2X Very Low Signal-to-Noise Ratio
 (VL-SNR) physical layer as specified in ETSI EN 302 307-2.  All 9 MODCODs
-are implemented with standard-exact puncturing and shortening, covering
-the operating range from -2 dB to -10 dB Es/N0.
+are implemented with the puncturing, shortening, header, and pilot tables
+covered by the deterministic golden-vector tests.
 
 The library provides a complete transmit and receive chain: FEC encoding
 (BCH + LDPC with puncturing/shortening), pi/2-BPSK and QPSK modulation,
@@ -21,7 +21,9 @@ Building
 
 	make			Build libdvbs2x_vlsnr.a
 	make DEBUG=1		Debug build (-g -O0)
-	make test		Build and run all tests
+	make test		Build and run deterministic fast tests
+	make test-sanitize	Run fast tests with ASan and UBSan
+	make test-slow		Run BER, RF, and robustness experiments
 	make clean		Remove objects and binaries
 
 Requirements: GCC with C11 support, libm.  No external dependencies.
@@ -62,26 +64,21 @@ See streaming/README for detailed API documentation and usage examples.
 Supported MODCODs
 -----------------
 
-  Idx  Mod         Rate   FEC    Spread  User bits  RF threshold
-  ---  ----------  -----  -----  ------  ---------  ------------
-   1   QPSK        2/9    64800    no      14128       -3 dB
-   2   pi/2-BPSK   1/5    32400    no       5580       -6 dB
-   3   pi/2-BPSK   11/45  32400    no       7660       -5 dB
-   4   pi/2-BPSK   1/3    32400    no      10540       -4 dB
-   5   pi/2-BPSK   1/5    16200    x2       2432       -10 dB
-   6   pi/2-BPSK   11/45  16200    x2       3712       -8 dB
-   7   pi/2-BPSK   1/5    16200    no       2992       -6 dB
-   8   pi/2-BPSK   4/15   16200    no       4072       -4 dB (*)
-   9   pi/2-BPSK   1/3    16200    no       5152       -3 dB
-
-(*) MODCOD 8 threshold is -5 dB at symbol level; the extra 1 dB
-    loss at RF is from carrier recovery at low pilot density.
+  Idx  Mod         Rate   FEC    Spread  User bits
+  ---  ----------  -----  -----  ------  ---------
+   1   QPSK        2/9    64800    no      14128
+   2   pi/2-BPSK   1/5    32400    no       5580
+   3   pi/2-BPSK   11/45  32400    no       7660
+   4   pi/2-BPSK   1/3    32400    no      10540
+   5   pi/2-BPSK   1/5    16200    x2       2432
+   6   pi/2-BPSK   11/45  16200    x2       3712
+   7   pi/2-BPSK   1/5    16200    no       2992
+   8   pi/2-BPSK   4/15   16200    no       4072
+   9   pi/2-BPSK   1/3    16200    no       5152
 
 User bits = payload capacity per frame (excluding BB header).
-Thresholds measured through the full RF chain: RRC pulse shaping,
-timing offset 0.30 samples, frequency offset 1e-4 cycles/symbol,
-phase offset 0.7 rad, and AWGN.  Criterion: error-free at the
-stated Es/N0 (single frame, seed 42).
+The slow BER programs are finite, reproducible simulations, not formal
+receiver thresholds.  They do not establish real-device interoperability.
 
 Puncturing and shortening are applied per ETSI EN 302 307-2:
 MODCODs 2 and 5 use shortening (xs > 0), all MODCODs use
@@ -94,18 +91,19 @@ Signal Chain
 
 Transmitter:
 
-	User data -> BB frame (with xs zero prefix) ->
+	Generic continuous bits -> BB frame ->
 	BCH encode -> LDPC encode ->
+	prepend xs zero information bits ->
 	shorten (remove xs info bits) ->
 	puncture (remove xp parity bits, period P) ->
-	bit interleave -> modulate (pi/2-BPSK or QPSK) ->
-	symbol spread (MODCODs 5,6 only) ->
+	bit interleave -> SF2 bit duplication (MODCODs 5,6 only) ->
+	modulate (pi/2-BPSK or QPSK) ->
 	PL frame assembly (PL header + WH header + pilots) ->
 	PL scramble (data field only) -> RRC pulse shape
 
 Receiver:
 
-	RRC matched filter (persistent in streaming mode) ->
+	RRC matched filter ->
 	Oerder-Meyr feed-forward timing recovery ->
 	[AFC pre-correction (streaming mode only)] ->
 	frame sync (segment-coherent WH correlation) ->
@@ -126,7 +124,7 @@ Public API
 The public interface is defined in include/dvbs2x_vlsnr.h.  Link
 against libdvbs2x_vlsnr.a and libm.
 
-All functions return 0 on success, -1 on error unless noted.
+Functions return DVBS2X_OK or a negative DVBS2X_ERR_* value.
 
 
 0. Library initialization
@@ -156,7 +154,7 @@ All functions return 0 on success, -1 on error unless noted.
   modcod_idx	  MODCOD index, 1 through 9 (see table above).
   rolloff	  RRC roll-off factor.  0.35 is the DVB-S2X default.
   sps		  Samples per symbol.  Minimum 2.
-  scrambling_idx  PL scrambling sequence index, 0-7.
+  scrambling_idx  PL Gold-code index, 0 through 262141.
 
   The demodulator allocates internal resources (LDPC CSR matrix,
   working memory).  Call dvbs2x_demodulator_destroy() when done.
@@ -169,6 +167,8 @@ All functions return 0 on success, -1 on error unless noted.
 
 	output = malloc(cap * sizeof(struct dvbs2x_complex));
 	dvbs2x_modulate(&mod, user_data, user_bits, output, &out_len);
+	dvbs2x_modulate_ex(&mod, user_data, user_bits, output,
+			   capacity, &out_len);
 
   user_data	Input bit array (uint8_t, one bit per byte, 0/1).
   user_bits	Number of user data bits.  Maximum per frame:
@@ -181,6 +181,9 @@ All functions return 0 on success, -1 on error unless noted.
 	unsigned int tx = dvbs2x_tx_coded_bits(mc);
 	cap = (DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN +
 	       tx * 2 + (tx * 2 / 1440 + 1) * 36 + 64) * sps;
+
+  Prefer the _ex variant.  If capacity is too small it returns
+  DVBS2X_ERR_SHORT and reports the required length without writing output.
 
 
 3. Modulation (symbol-rate output)
@@ -204,11 +207,11 @@ All functions return 0 on success, -1 on error unless noted.
   user_out	Decoded user data bits (one bit per byte).
   rec_len	Number of user bits recovered.
 
-  Returns 0 on successful FEC decode, -1 otherwise.
+  The capacity-checked receive variants are dvbs2x_demodulate_ex(),
+  dvbs2x_demodulate_symbols_ex(), and dvbs2x_demodulate_stream_ex().
 
-  Each call is independent: the matched filter and timing
-  recovery are reset.  The AFC accumulates across calls but
-  does not apply pre-correction in burst mode.
+  Each call is independent: the matched filter and timing recovery are
+  reset, and streaming AFC pre-correction is not active in burst mode.
 
 
 5. Demodulation (burst mode, symbol-rate input)
@@ -228,22 +231,21 @@ All functions return 0 on success, -1 on error unless noted.
 	ret = dvbs2x_demodulate_stream(&demod, input, in_len,
 				       user_out, &rec_len, &consumed);
 
-  consumed	Number of input samples consumed (caller advances
-		its read pointer by this amount).
+  consumed	Number of input samples accepted into the internal
+		read-ahead buffer.
 
-  Streaming receiver with persistent state across calls.  The
-  matched filter delay line, AFC frequency estimate, and lock
-  state carry over between frames.  State machine:
+  Every successfully buffered input sample is reported consumed and must
+  not be submitted again.  Partial frames and read-ahead remain internal.
+  At most one frame is returned per call; call again with input == NULL
+  and in_len == 0 to drain already buffered frames.  DVBS2X_ERR_SHORT
+  means that another contiguous chunk is required.  The lock state is:
 
 	SEARCH  -> first successful decode -> ACQUIRE
 	ACQUIRE -> 3 consecutive successes -> TRACK
 	TRACK   -> 3 consecutive failures  -> SEARCH
 
-  In TRACK mode the receiver predicts frame boundaries from the
-  known frame length, reducing acquisition overhead.
-
-  Feed contiguous samples.  Returns 0 when a frame is decoded,
-  -1 when no frame could be recovered from the current chunk.
+  Cached samples are decoded from a reset front-end snapshot so an
+  incomplete-frame retry never advances filter or timing state twice.
 
 
 7. MODCOD query
@@ -263,6 +265,10 @@ All functions return 0 on success, -1 on error unless noted.
 
   User data capacity:  mc->k_bch - 80  bits.
   Transmitted coded bits:  dvbs2x_tx_coded_bits(mc).
+
+  dvbs2x_vlsnr_get_modcod_name() returns the stable canonical name.
+  dvbs2x_vlsnr_get_modcod_by_name() accepts canonical and unambiguous
+  legacy names; ambiguous legacy names return NULL.
 
 
 8. Resource cleanup
@@ -341,6 +347,14 @@ Compile:
 Test Programs
 -------------
 
+  make test		Deterministic API, FEC, framing, streaming,
+			and golden-vector tests suitable for CI.
+
+  make test-asan	AddressSanitizer fast-test build in a temporary tree.
+  make test-ubsan	UndefinedBehaviorSanitizer fast-test build.
+  make test-sanitize	Combined ASan and UBSan fast-test build.
+  make test-slow	Reproducible BER, RF, and robustness experiments.
+
   test_modulator	Unit tests for individual blocks (BCH, LDPC,
 			RRC, PL header, scrambler, modulation).
 
@@ -349,6 +363,9 @@ Test Programs
 
   test_e2e		Modulator pipeline check.  Verifies frame
 			lengths and RRC output for all MODCODs.
+
+  test_full_chain	Noiseless BB-to-PL-to-BB payload recovery for
+			all nine MODCODs.
 
   test_api_loopback	Public API loopback with configurable
 			impairments (freq, phase, timing, noise).
@@ -364,8 +381,11 @@ Test Programs
 			Usage: test_rf_ber [modcod] [frames_per_point]
 
   test_stream		Multi-frame streaming reception test.
-			Usage: test_stream [modcod] [esn0] [frames]
-			       [freq_offset]
+			Covers exact frames, read-ahead, drain calls, and
+			arbitrary chunks for normal, medium, and short frames.
+
+  test_vectors		Stable fingerprints for W-H, MODCOD, LDPC,
+			scrambling, PLS, FEC positions, pilots, and lengths.
 
 
 Implementation Notes
@@ -373,9 +393,8 @@ Implementation Notes
 
 LDPC Decoder:
 
-  Layered sum-product (belief propagation) with exact box-plus
-  check-node update via a 512-entry precomputed LUT for the
-  log1p(exp(-x)) correction term.  LLR values clamped to +/-40.
+  Layered belief-propagation decoder with a precomputed box-plus
+  correction LUT.  LLR values are clamped to +/-40.
   Maximum 200 iterations (DVBS2X_LDPC_MAX_ITER), convergence
   checked every 5 iterations to reduce syndrome-check overhead.
 
@@ -388,8 +407,8 @@ RRC Filter:
 
   Double-length linear delay line (mirror writes) eliminates the
   branch in the convolution inner loop, enabling compiler auto-
-  vectorization.  The filter state persists across calls in
-  streaming mode for seamless frame-boundary transitions.
+  vectorization.  Streaming input is retained in a read-ahead buffer
+  and each decode attempt uses a reset front-end snapshot.
 
 Frame Synchronization:
 
@@ -424,8 +443,9 @@ Timing Recovery:
 
 Puncturing/Shortening:
 
-  Per ETSI EN 302 307-2: xs information bits are set to zero in
-  the BB frame (not transmitted, receiver inserts +40 LLR); xp
+  Per ETSI EN 302 307-2: xs zero bits are prepended to the BCH
+  codeword before LDPC encoding (not transmitted; receiver inserts
+  +40 LLR); xp
   parity bits are removed at positions i*p_period (receiver
   inserts zero LLR).  The interleaver and frame geometry operate
   on the post-puncture bit count (fec_len - xs - xp).
@@ -434,22 +454,27 @@ Puncturing/Shortening:
 Limitations
 -----------
 
-  - The Walsh-Hadamard sequences are implementation-specific
-    (PN-covered, rows 33/61/69/131/254/292/392/411/434).  They
-    are not the exact sequences from ETSI EN 302 307-2 Table 18.
-    The library is self-consistent (own mod <-> own demod) but
-    may not interoperate with other implementations.
+  - The 900-symbol VL-SNR header and all 16 W-H sequences are checked
+    against stable fingerprints derived from ETSI EN 302 307-2 V1.3.1
+    and the named GNU Radio gr-dtv reference files.  This is table/vector
+    agreement, not evidence of interoperability with commercial devices.
 
   - No ACM (Adaptive Coding and Modulation): the MODCOD is fixed
     per modulator instance.  Switching MODCODs mid-stream requires
     re-initialization.
 
-  - Static lazy-initialized lookup tables (WH references, boxplus
-    LUT) are not thread-safe.  Use one demodulator per thread, or
-    call any API function once before spawning threads.
+  - Static lazy-initialized lookup tables (WH references, boxplus LUT)
+    are not thread-safe.  Call dvbs2x_library_init() before starting
+    worker threads and use one modulator/demodulator per stream.
 
-  - BB frame TS packet reassembly does not span frame boundaries
-    (the syncd field is not tracked across frames).
+  - The BBFRAME API accepts already adapted generic continuous bits.
+    Raw 188-byte MPEG-TS mode adaptation, sync-byte replacement, UP
+    CRC-8, SYNCD continuity, and receiver packet reassembly are not
+    implemented; DVBS2X_STREAM_TS is explicitly rejected.
+
+  - Symbol-level loopback verifies framing and FEC without RF effects.
+    RF tests are finite software simulations.  No real-device or on-air
+    interoperability claim is made.
 
 
 References
