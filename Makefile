@@ -52,6 +52,7 @@ PKGCONFIG	= dvbs2x_vlsnr.pc
 TESTS		= $(TEST_SRCS:$(TESTDIR)/%.c=$(TESTDIR)/%)
 FAST_TESTS	= $(TESTDIR)/test_api \
 		  $(TESTDIR)/test_e2e \
+		  $(TESTDIR)/test_full_chain \
 		  $(TESTDIR)/test_loopback \
 		  $(TESTDIR)/test_modulator \
 		  $(TESTDIR)/test_stream \
