@@ -50,8 +50,19 @@ PKGCONFIG	= dvbs2x_vlsnr.pc
 
 # Test binaries
 TESTS		= $(TEST_SRCS:$(TESTDIR)/%.c=$(TESTDIR)/%)
+FAST_TESTS	= $(TESTDIR)/test_api \
+		  $(TESTDIR)/test_e2e \
+		  $(TESTDIR)/test_loopback \
+		  $(TESTDIR)/test_modulator \
+		  $(TESTDIR)/test_stream
+SLOW_TESTS	= $(TESTDIR)/test_api_loopback \
+		  $(TESTDIR)/test_ber \
+		  $(TESTDIR)/test_ber_vlsnr \
+		  $(TESTDIR)/test_fuzz \
+		  $(TESTDIR)/test_rf_ber
 
-.PHONY: all clean test install uninstall
+.PHONY: all clean test test-slow test-asan test-ubsan test-sanitize \
+	install uninstall
 
 all: $(LIB) $(PKGCONFIG)
 
@@ -70,12 +81,28 @@ $(TBLDIR)/%.o: $(TBLDIR)/%.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 # Test targets
-test: $(TESTS)
-	@for t in $(TESTS); do \
+test: $(FAST_TESTS)
+	@for t in $(FAST_TESTS); do \
 		echo "Running $$t..."; \
 		./$$t || exit 1; \
 	done
 	@echo "All tests passed."
+
+test-slow: $(SLOW_TESTS)
+	@for t in $(SLOW_TESTS); do \
+		echo "Running $$t..."; \
+		./$$t || exit 1; \
+	done
+	@echo "All slow tests passed."
+
+test-asan:
+	./test/run-sanitizers.sh address
+
+test-ubsan:
+	./test/run-sanitizers.sh undefined
+
+test-sanitize:
+	./test/run-sanitizers.sh address,undefined
 
 $(TESTDIR)/%: $(TESTDIR)/%.c $(LIB)
 	$(CC) $(CFLAGS) -o $@ $< -L. -ldvbs2x_vlsnr $(LDFLAGS)
