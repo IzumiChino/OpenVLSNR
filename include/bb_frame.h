@@ -81,6 +81,13 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 			  uint8_t *user_data,
 			  unsigned int *user_len);
 
+/* Capacity-checked variant of dvbs2x_bb_frame_parse(). */
+int dvbs2x_bb_frame_parse_ex(const struct dvbs2x_bb_frame_ctx *ctx,
+			     const uint8_t *bbframe,
+			     uint8_t *user_data,
+			     unsigned int user_capacity,
+			     unsigned int *user_len);
+
 /*
  * dvbs2x_bb_crc8 - Compute CRC-8 for BB header
  * @data: header bytes (first 9 bytes)

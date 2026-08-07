@@ -375,12 +375,13 @@ void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod)
 	demod->stream_cap = 0;
 }
 
-int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
-			      const struct dvbs2x_complex *input,
-			      unsigned int in_len,
-			      double noise_var,
-			      uint8_t *user_data,
-			      unsigned int *user_len)
+int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
+				 const struct dvbs2x_complex *input,
+				 unsigned int in_len,
+				 double noise_var,
+				 uint8_t *user_data,
+				 unsigned int user_capacity,
+				 unsigned int *user_len)
 {
 	const struct dvbs2x_modcod *mc;
 	struct dvbs2x_complex *work = NULL;
@@ -671,11 +672,10 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 
 	/* BB frame parse */
 	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_TS);
-	if (dvbs2x_bb_frame_parse(&demod->bb_ctx, bch_cw,
-				  user_data, user_len) < 0)
+	ret = dvbs2x_bb_frame_parse_ex(&demod->bb_ctx, bch_cw,
+				       user_data, user_capacity, user_len);
+	if (ret < 0 && ret != DVBS2X_ERR_SHORT)
 		ret = DVBS2X_ERR_CRC;
-	else
-		ret = DVBS2X_OK;
 
 out:
 	free(work);
@@ -691,11 +691,23 @@ out:
 	return ret;
 }
 
-int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
-		      const struct dvbs2x_complex *input,
-		      unsigned int in_len,
-		      uint8_t *user_data,
-		      unsigned int *user_len)
+int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
+			      const struct dvbs2x_complex *input,
+			      unsigned int in_len,
+			      double noise_var,
+			      uint8_t *user_data,
+			      unsigned int *user_len)
+{
+	return dvbs2x_demodulate_symbols_ex(demod, input, in_len, noise_var,
+					    user_data, UINT_MAX, user_len);
+}
+
+int dvbs2x_demodulate_ex(struct dvbs2x_demodulator *demod,
+			 const struct dvbs2x_complex *input,
+			 unsigned int in_len,
+			 uint8_t *user_data,
+			 unsigned int user_capacity,
+			 unsigned int *user_len)
 {
 	struct dvbs2x_complex *filtered = NULL;
 	struct dvbs2x_complex *symbols = NULL;
@@ -725,13 +737,23 @@ int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 	dvbs2x_timing_sync_process(&demod->timing, filtered, filt_len,
 				   symbols, &sym_len);
 
-	ret = dvbs2x_demodulate_symbols(demod, symbols, sym_len, 0.0,
-					user_data, user_len);
+	ret = dvbs2x_demodulate_symbols_ex(demod, symbols, sym_len, 0.0,
+					   user_data, user_capacity, user_len);
 
 out:
 	free(filtered);
 	free(symbols);
 	return ret;
+}
+
+int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
+		      const struct dvbs2x_complex *input,
+		      unsigned int in_len,
+		      uint8_t *user_data,
+		      unsigned int *user_len)
+{
+	return dvbs2x_demodulate_ex(demod, input, in_len, user_data,
+				    UINT_MAX, user_len);
 }
 
 /*
@@ -766,12 +788,13 @@ void dvbs2x_demod_lock_update(struct dvbs2x_demodulator *demod, int success)
 	dvbs2x_afc_init(&demod->afc, 0.95);
 }
 
-int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
-			     const struct dvbs2x_complex *input,
-			     unsigned int in_len,
-			     uint8_t *user_data,
-			     unsigned int *user_len,
-			     unsigned int *consumed)
+int dvbs2x_demodulate_stream_ex(struct dvbs2x_demodulator *demod,
+				const struct dvbs2x_complex *input,
+				unsigned int in_len,
+				uint8_t *user_data,
+				unsigned int user_capacity,
+				unsigned int *user_len,
+				unsigned int *consumed)
 {
 	struct dvbs2x_complex *new_buf;
 	struct dvbs2x_complex *decode_buf = NULL;
@@ -835,8 +858,8 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 		return DVBS2X_ERR_NOMEM;
 	memcpy(decode_buf, demod->stream_buf,
 	       demod->stream_len * sizeof(*decode_buf));
-	ret = dvbs2x_demodulate(demod, decode_buf, decode_len,
-			       user_data, user_len);
+	ret = dvbs2x_demodulate_ex(demod, decode_buf, decode_len,
+				  user_data, user_capacity, user_len);
 	free(decode_buf);
 
 	if (demod->modcod) {
@@ -868,4 +891,15 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 		demod->stream_len * sizeof(*demod->stream_buf));
 
 	return ret;
+}
+
+int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
+			     const struct dvbs2x_complex *input,
+			     unsigned int in_len,
+			     uint8_t *user_data,
+			     unsigned int *user_len,
+			     unsigned int *consumed)
+{
+	return dvbs2x_demodulate_stream_ex(demod, input, in_len, user_data,
+					   UINT_MAX, user_len, consumed);
 }

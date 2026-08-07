@@ -107,13 +107,51 @@ out:
 	return ret;
 }
 
+static int test_demodulator_capacity(void)
+{
+	struct dvbs2x_modulator mod;
+	struct dvbs2x_demodulator demod;
+	const struct dvbs2x_modcod *mc;
+	struct dvbs2x_complex *symbols = NULL;
+	uint8_t *payload = NULL;
+	uint8_t output[1];
+	unsigned int payload_len, symbol_len = 0, required = 0;
+	int ret = -1;
+
+	mc = dvbs2x_vlsnr_get_modcod(9);
+	if (!mc || dvbs2x_modulator_init(&mod, 9, 0.35, 2, 0) < 0 ||
+	    dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	payload_len = mc->k_bch - 80;
+	payload = calloc(payload_len, 1);
+	symbols = calloc(DVBS2X_VLSNR_FRAME_SHORT, sizeof(*symbols));
+	if (!payload || !symbols)
+		goto out;
+	if (dvbs2x_modulate_symbols_ex(&mod, payload, payload_len, symbols,
+				       DVBS2X_VLSNR_FRAME_SHORT,
+				       &symbol_len) < 0)
+		goto out;
+	if (dvbs2x_demodulate_symbols_ex(&demod, symbols, symbol_len, 0.001,
+					 output, 0, &required) !=
+	    DVBS2X_ERR_SHORT || required != payload_len)
+		goto out;
+	ret = 0;
+out:
+	free(payload);
+	free(symbols);
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_modulator_destroy(&mod);
+	return ret;
+}
+
 int main(void)
 {
 	printf("DVB-S2X VL-SNR API Validation Tests\n");
 	printf("===================================\n");
 	if (test_init_parameters() < 0 ||
 	    test_modulator_parameters() < 0 ||
-	    test_bbframe_parameters() < 0) {
+	    test_bbframe_parameters() < 0 ||
+	    test_demodulator_capacity() < 0) {
 		printf("FAIL\n");
 		return 1;
 	}

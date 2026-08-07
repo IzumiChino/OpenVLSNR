@@ -212,6 +212,14 @@ int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 		      uint8_t *user_data,
 		      unsigned int *user_len);
 
+/* Capacity-checked variant of dvbs2x_demodulate(). */
+int dvbs2x_demodulate_ex(struct dvbs2x_demodulator *demod,
+			 const struct dvbs2x_complex *input,
+			 unsigned int in_len,
+			 uint8_t *user_data,
+			 unsigned int user_capacity,
+			 unsigned int *user_len);
+
 /*
  * dvbs2x_demodulate_symbols - Demodulate a symbol-rate stream
  * @demod: initialized demodulator
@@ -237,6 +245,15 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 			      double noise_var,
 			      uint8_t *user_data,
 			      unsigned int *user_len);
+
+/* Capacity-checked variant of dvbs2x_demodulate_symbols(). */
+int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
+				 const struct dvbs2x_complex *input,
+				 unsigned int in_len,
+				 double noise_var,
+				 uint8_t *user_data,
+				 unsigned int user_capacity,
+				 unsigned int *user_len);
 
 /*
  * dvbs2x_demodulate_stream - Continuous-mode streaming demodulation
@@ -272,6 +289,15 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			     uint8_t *user_data,
 			     unsigned int *user_len,
 			     unsigned int *consumed);
+
+/* Capacity-checked variant of dvbs2x_demodulate_stream(). */
+int dvbs2x_demodulate_stream_ex(struct dvbs2x_demodulator *demod,
+				const struct dvbs2x_complex *input,
+				unsigned int in_len,
+				uint8_t *user_data,
+				unsigned int user_capacity,
+				unsigned int *user_len,
+				unsigned int *consumed);
 
 #ifdef __cplusplus
 }

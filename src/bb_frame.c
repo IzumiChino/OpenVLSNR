@@ -14,6 +14,7 @@
  */
 
 #include "bb_frame.h"
+#include <limits.h>
 #include <string.h>
 
 #define BB_HEADER_BITS	80
@@ -144,10 +145,11 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	return 0;
 }
 
-int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
-			  const uint8_t *bbframe,
-			  uint8_t *user_data,
-			  unsigned int *user_len)
+int dvbs2x_bb_frame_parse_ex(const struct dvbs2x_bb_frame_ctx *ctx,
+			     const uint8_t *bbframe,
+			     uint8_t *user_data,
+			     unsigned int user_capacity,
+			     unsigned int *user_len)
 {
 	uint8_t descrambled[DVBS2X_LDPC_NORMAL];
 	uint8_t header_bytes[DVBS2X_BB_HEADER_LEN];
@@ -187,12 +189,23 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 	dfl = ((uint16_t)header_bytes[4] << 8) | header_bytes[5];
 	if (dfl > ctx->k_bch - BB_HEADER_BITS)
 		dfl = ctx->k_bch - BB_HEADER_BITS;
+	*user_len = dfl;
+	if (user_capacity < dfl)
+		return DVBS2X_ERR_SHORT;
 
 	/* Extract user data */
 	bit_idx = BB_HEADER_BITS;
 	for (i = 0; i < dfl; i++)
 		user_data[i] = descrambled[bit_idx + i];
 
-	*user_len = dfl;
 	return 0;
+}
+
+int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
+			  const uint8_t *bbframe,
+			  uint8_t *user_data,
+			  unsigned int *user_len)
+{
+	return dvbs2x_bb_frame_parse_ex(ctx, bbframe, user_data, UINT_MAX,
+					user_len);
 }
