@@ -81,8 +81,8 @@ struct dvbs2x_demodulator {
 	struct dvbs2x_bb_frame_ctx	bb_ctx;
 	/* State machine */
 	enum dvbs2x_demod_state		state;
-	unsigned int			sync_frames;
-	unsigned int			frame_count;
+	unsigned int			consecutive_successes;
+	unsigned int			consecutive_failures;
 	/* Continuous-mode persistent state */
 	unsigned int			expected_frame_len;
 	int				filter_primed;
@@ -260,4 +260,3 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 #endif
 
 #endif /* DVBS2X_VLSNR_H */
-

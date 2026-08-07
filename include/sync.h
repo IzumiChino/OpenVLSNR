@@ -17,6 +17,12 @@
 
 #include "dvbs2x_types.h"
 
+struct dvbs2x_demodulator;
+
+/* Update streaming lock state after one frame decode attempt. */
+void dvbs2x_demod_lock_update(struct dvbs2x_demodulator *demod,
+			      int success);
+
 /* Symbol timing recovery state */
 struct dvbs2x_timing_sync {
 	double		mu;		/* fractional delay */

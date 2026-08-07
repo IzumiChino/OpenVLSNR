@@ -23,6 +23,7 @@
 #include "plheader.h"
 #include "vlsnr_header.h"
 #include "filter.h"
+#include "dvbs2x_vlsnr.h"
 
 static void test_modcod_table(void)
 {
@@ -54,6 +55,31 @@ static void test_modcod_table(void)
 	assert(dvbs2x_vlsnr_get_modcod_by_name("BPSK 1/5") == NULL);
 	assert(dvbs2x_vlsnr_get_modcod_by_name("BPSK 1/3") == NULL);
 
+	printf("    PASS\n");
+}
+
+static void test_lock_state(void)
+{
+	struct dvbs2x_demodulator demod = { 0 };
+
+	printf("  streaming lock state...\n");
+	demod.state = DVBS2X_DEMOD_SEARCH;
+	dvbs2x_demod_lock_update(&demod, 1);
+	assert(demod.state == DVBS2X_DEMOD_ACQUIRE);
+	dvbs2x_demod_lock_update(&demod, 1);
+	dvbs2x_demod_lock_update(&demod, 1);
+	assert(demod.state == DVBS2X_DEMOD_TRACK);
+
+	dvbs2x_demod_lock_update(&demod, 0);
+	assert(demod.state == DVBS2X_DEMOD_TRACK);
+	dvbs2x_demod_lock_update(&demod, 1);
+	assert(demod.state == DVBS2X_DEMOD_TRACK);
+	assert(demod.consecutive_failures == 0);
+	dvbs2x_demod_lock_update(&demod, 0);
+	dvbs2x_demod_lock_update(&demod, 0);
+	assert(demod.state == DVBS2X_DEMOD_TRACK);
+	dvbs2x_demod_lock_update(&demod, 0);
+	assert(demod.state == DVBS2X_DEMOD_SEARCH);
 	printf("    PASS\n");
 }
 
@@ -293,6 +319,7 @@ int main(void)
 	printf("==============================\n");
 
 	test_modcod_table();
+	test_lock_state();
 	test_bch_encode();
 	test_ldpc_encode();
 	test_pi2bpsk_modulation();

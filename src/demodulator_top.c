@@ -353,8 +353,8 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 	dvbs2x_afc_init(&demod->afc, 0.95);
 	dvbs2x_scrambler_init(&demod->descrambler, pl_scrambling_idx);
 
-	demod->sync_frames = 0;
-	demod->frame_count = 0;
+	demod->consecutive_successes = 0;
+	demod->consecutive_failures = 0;
 
 	return 0;
 }
@@ -718,6 +718,31 @@ out:
 #define LOCK_THRESH	3
 #define LOSS_THRESH	3
 
+void dvbs2x_demod_lock_update(struct dvbs2x_demodulator *demod, int success)
+{
+	if (success) {
+		demod->consecutive_successes++;
+		demod->consecutive_failures = 0;
+		if (demod->state == DVBS2X_DEMOD_SEARCH)
+			demod->state = DVBS2X_DEMOD_ACQUIRE;
+		if (demod->state == DVBS2X_DEMOD_ACQUIRE &&
+		    demod->consecutive_successes >= LOCK_THRESH)
+			demod->state = DVBS2X_DEMOD_TRACK;
+		return;
+	}
+
+	demod->consecutive_successes = 0;
+	demod->consecutive_failures++;
+	if (demod->state != DVBS2X_DEMOD_TRACK ||
+	    demod->consecutive_failures < LOSS_THRESH)
+		return;
+
+	demod->state = DVBS2X_DEMOD_SEARCH;
+	demod->consecutive_failures = 0;
+	demod->expected_frame_len = 0;
+	dvbs2x_afc_init(&demod->afc, 0.95);
+}
+
 int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			     const struct dvbs2x_complex *input,
 			     unsigned int in_len,
@@ -793,9 +818,6 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 
 	/* Update state machine */
 	if (ret == 0) {
-		demod->sync_frames++;
-		demod->frame_count++;
-
 		/* Compute expected frame length for next prediction */
 		if (demod->modcod) {
 			unsigned int tx_sym, dfl;
@@ -806,25 +828,8 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 					DVBS2X_VLSNR_HDR_LEN + dfl;
 		}
 
-		/* State transitions on success */
-		if (demod->state == DVBS2X_DEMOD_SEARCH)
-			demod->state = DVBS2X_DEMOD_ACQUIRE;
-		if (demod->state == DVBS2X_DEMOD_ACQUIRE &&
-		    demod->sync_frames >= LOCK_THRESH)
-			demod->state = DVBS2X_DEMOD_TRACK;
-	} else {
-		demod->sync_frames = 0;
-
-		/* Revert to SEARCH after consecutive failures */
-		if (demod->state == DVBS2X_DEMOD_TRACK) {
-			demod->frame_count++;
-			if (demod->frame_count >= LOSS_THRESH) {
-				demod->state = DVBS2X_DEMOD_SEARCH;
-				demod->frame_count = 0;
-				dvbs2x_afc_init(&demod->afc, 0.95);
-			}
-		}
 	}
+	dvbs2x_demod_lock_update(demod, ret == 0);
 
 	/*
 	 * Report consumed samples.  Use the known frame length
