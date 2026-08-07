@@ -35,7 +35,7 @@ static int parity_chk(uint32_t a, uint32_t b)
 	return (int)(a & 1);
 }
 
-unsigned int dvbs2x_scrambler_rn(struct dvbs2x_scrambler *scr)
+unsigned int dvbs2x_scrambler_next_rn(struct dvbs2x_scrambler *scr)
 {
 	int xa, xb, xc, ya, yb, yc;
 
@@ -88,7 +88,7 @@ void dvbs2x_scrambler_seek(struct dvbs2x_scrambler *scr, unsigned int n)
 	unsigned int i;
 
 	for (i = 0; i < n; i++)
-		dvbs2x_scrambler_rn(scr);
+		dvbs2x_scrambler_next_rn(scr);
 }
 
 /* Apply the forward 4-phase rotation for Rn to one symbol. */
@@ -150,7 +150,7 @@ void dvbs2x_scramble_field(struct dvbs2x_scrambler *scr,
 	unsigned int n;
 
 	for (n = 0; n < len; n++) {
-		unsigned int rn = dvbs2x_scrambler_rn(scr);
+		unsigned int rn = dvbs2x_scrambler_next_rn(scr);
 		int four_phase = is_qpsk || (is_pilot && is_pilot[n]);
 
 		if (four_phase) {
@@ -172,7 +172,7 @@ void dvbs2x_descramble_field(struct dvbs2x_scrambler *scr,
 	unsigned int n;
 
 	for (n = 0; n < len; n++) {
-		unsigned int rn = dvbs2x_scrambler_rn(scr);
+		unsigned int rn = dvbs2x_scrambler_next_rn(scr);
 		int four_phase = is_qpsk || (is_pilot && is_pilot[n]);
 
 		if (four_phase) {
@@ -194,7 +194,7 @@ void dvbs2x_scramble(struct dvbs2x_scrambler *scr,
 		double si = symbols[n].i;
 		double sq = symbols[n].q;
 
-		switch (dvbs2x_scrambler_rn(scr)) {
+		switch (dvbs2x_scrambler_next_rn(scr)) {
 		case 1:				/* x j */
 			symbols[n].i = -sq;
 			symbols[n].q = si;
@@ -224,7 +224,7 @@ void dvbs2x_descramble(struct dvbs2x_scrambler *scr,
 		double sq = symbols[n].q;
 
 		/* Apply conj(Cn) = exp(-j * Rn * pi/2). */
-		switch (dvbs2x_scrambler_rn(scr)) {
+		switch (dvbs2x_scrambler_next_rn(scr)) {
 		case 1:				/* x -j */
 			symbols[n].i = sq;
 			symbols[n].q = -si;
