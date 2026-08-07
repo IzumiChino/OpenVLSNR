@@ -65,6 +65,9 @@ int dvbs2x_rrc_filter_init(struct dvbs2x_rrc_filter *flt,
 	double energy = 0.0;
 	double norm;
 
+	if (!flt || sps < 2 || span == 0 || rolloff < 0.05 ||
+	    rolloff > 0.35 || span > (DVBS2X_FILTER_MAX_TAPS - 1) / 2 / sps)
+		return -1;
 	num_taps = 2 * span * sps + 1;
 	if (num_taps > DVBS2X_FILTER_MAX_TAPS)
 		return -1;

@@ -26,6 +26,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DVBS2X_GOLD_CODE_MAX	262141
+
 int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 			  unsigned int modcod_idx,
 			  double rolloff,
@@ -35,8 +37,12 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 	const struct dvbs2x_modcod *mc;
 	int ret;
 
+	if (!mod)
+		return DVBS2X_ERR_PARAM;
+	memset(mod, 0, sizeof(*mod));
 	mc = dvbs2x_vlsnr_get_modcod(modcod_idx);
-	if (!mc)
+	if (!mc || sps < 2 || rolloff < 0.05 || rolloff > 0.35 ||
+	    pl_scrambling_idx > DVBS2X_GOLD_CODE_MAX)
 		return DVBS2X_ERR_PARAM;
 
 	mod->cfg.modcod = mc;
@@ -70,7 +76,8 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 
 void dvbs2x_modulator_destroy(struct dvbs2x_modulator *mod)
 {
-	(void)mod;
+	if (!mod)
+		return;
 	/* All modulator state is inline; nothing to free. */
 }
 
@@ -84,7 +91,7 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 			    struct dvbs2x_complex *symbols,
 			    unsigned int *sym_len)
 {
-	const struct dvbs2x_modcod *mc = mod->cfg.modcod;
+	const struct dvbs2x_modcod *mc;
 	uint8_t *bbframe = NULL;
 	uint8_t *bch_out = NULL;
 	uint8_t *ldpc_info = NULL;
@@ -99,6 +106,15 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 	unsigned int hdr_len;
 	unsigned int i, p_idx, t_idx;
 	int ret = DVBS2X_ERR_NOMEM;
+
+	if (!sym_len)
+		return DVBS2X_ERR_PARAM;
+	*sym_len = 0;
+	if (!mod || !mod->cfg.modcod || !user_data || !symbols)
+		return DVBS2X_ERR_PARAM;
+	mc = mod->cfg.modcod;
+	if (user_len > mod->bb_ctx.dfl)
+		return DVBS2X_ERR_PARAM;
 
 	hdr_len = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN;
 	tx_coded = dvbs2x_tx_coded_bits(mc);
@@ -242,12 +258,21 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 		    struct dvbs2x_complex *output,
 		    unsigned int *out_len)
 {
-	const struct dvbs2x_modcod *mc = mod->cfg.modcod;
+	const struct dvbs2x_modcod *mc;
 	struct dvbs2x_complex *frame = NULL;
 	unsigned int frame_cap;
 	unsigned int frame_len = 0;
 	unsigned int rrc_out_len;
 	int ret = DVBS2X_ERR_NOMEM;
+
+	if (!out_len)
+		return DVBS2X_ERR_PARAM;
+	*out_len = 0;
+	if (!mod || !mod->cfg.modcod || !user_data || !output)
+		return DVBS2X_ERR_PARAM;
+	mc = mod->cfg.modcod;
+	if (user_len > mod->bb_ctx.dfl)
+		return DVBS2X_ERR_PARAM;
 
 	/*
 	 * Worst-case frame size: header + all transmitted symbols

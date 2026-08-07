@@ -93,9 +93,11 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	unsigned int i, bit_idx;
 	uint8_t matype1;
 
+	if (!ctx || !user_data || !bbframe)
+		return DVBS2X_ERR_PARAM;
 	dfl = ctx->dfl;
 	if (user_len > dfl)
-		user_len = dfl;
+		return DVBS2X_ERR_PARAM;
 
 	/*
 	 * Build MATYPE-1: [TS/GS][SIS/MIS][CCM/ACM][ISSYI][NPD][RO:2].
@@ -152,6 +154,13 @@ int dvbs2x_bb_frame_parse(const struct dvbs2x_bb_frame_ctx *ctx,
 	unsigned int i, bit_idx;
 	uint8_t crc;
 	uint16_t dfl;
+
+	if (!user_len)
+		return DVBS2X_ERR_PARAM;
+	*user_len = 0;
+	if (!ctx || !bbframe || !user_data ||
+	    ctx->k_bch > DVBS2X_LDPC_NORMAL)
+		return DVBS2X_ERR_PARAM;
 
 	/* Copy and descramble the BB frame */
 	for (i = 0; i < ctx->k_bch; i++)

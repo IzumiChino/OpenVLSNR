@@ -40,6 +40,7 @@
 #endif
 
 #define M_SQRT1_2_D	0.70710678118654752440
+#define DVBS2X_GOLD_CODE_MAX	262141
 
 /*
  * L&R coarse-frequency lags, and the minimum estimated Es/N0 (dB) at
@@ -338,10 +339,13 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 			    unsigned int sps,
 			    unsigned int pl_scrambling_idx)
 {
+	if (!demod)
+		return DVBS2X_ERR_PARAM;
 	memset(demod, 0, sizeof(*demod));
 	demod->modcod = NULL;	/* determined after frame sync */
 
-	if (sps < 2)
+	if (sps < 2 || rolloff < 0.05 || rolloff > 0.35 ||
+	    pl_scrambling_idx > DVBS2X_GOLD_CODE_MAX)
 		return DVBS2X_ERR_PARAM;
 
 	if (dvbs2x_rrc_filter_init(&demod->rx_filter, rolloff, sps, 16) < 0)
@@ -396,6 +400,12 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
 	unsigned int iter_used;
 	double conf, demap_nv, nv_est, esn0_db;
 	int ret = DVBS2X_ERR_FEC;
+
+	if (!user_len)
+		return DVBS2X_ERR_PARAM;
+	*user_len = 0;
+	if (!demod || !input || !user_data || noise_var < 0.0)
+		return DVBS2X_ERR_PARAM;
 
 	if (in_len < DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN)
 		return DVBS2X_ERR_SHORT;
@@ -691,6 +701,12 @@ int dvbs2x_demodulate(struct dvbs2x_demodulator *demod,
 	struct dvbs2x_complex *symbols = NULL;
 	unsigned int filt_len = 0, sym_len = 0;
 	int ret = DVBS2X_ERR_NOMEM;
+
+	if (!user_len)
+		return DVBS2X_ERR_PARAM;
+	*user_len = 0;
+	if (!demod || !input || !user_data)
+		return DVBS2X_ERR_PARAM;
 
 	/* Matched filter */
 	filtered = malloc(in_len * sizeof(struct dvbs2x_complex));

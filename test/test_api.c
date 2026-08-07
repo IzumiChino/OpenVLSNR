@@ -1,0 +1,112 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
+/*
+ * DVB-S2X VL-SNR Public API Validation Test
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "dvbs2x_vlsnr.h"
+
+static int test_init_parameters(void)
+{
+	struct dvbs2x_modulator mod;
+	struct dvbs2x_demodulator demod;
+
+	if (dvbs2x_modulator_init(NULL, 1, 0.35, 2, 0) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_modulator_init(&mod, 0, 0.35, 2, 0) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_modulator_init(&mod, 1, 0.35, 1, 0) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_modulator_init(&mod, 1, 0.0, 2, 0) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_modulator_init(&mod, 1, 0.35, 2, 262142) !=
+	    DVBS2X_ERR_PARAM)
+		return -1;
+
+	memset(&demod, 0xa5, sizeof(demod));
+	if (dvbs2x_demodulator_init(NULL, 0.35, 2, 0) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_demodulator_init(&demod, 0.35, 1, 0) !=
+	    DVBS2X_ERR_PARAM)
+		return -1;
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_demodulator_destroy(NULL);
+	dvbs2x_modulator_destroy(NULL);
+	return 0;
+}
+
+static int test_modulator_parameters(void)
+{
+	struct dvbs2x_modulator mod;
+	struct dvbs2x_complex output[1];
+	uint8_t data[1] = { 0 };
+	unsigned int out_len;
+
+	if (dvbs2x_modulator_init(&mod, 9, 0.35, 2, 0) < 0)
+		return -1;
+	out_len = 123;
+	if (dvbs2x_modulate(NULL, data, 1, output, &out_len) !=
+	    DVBS2X_ERR_PARAM || out_len != 0)
+		return -1;
+	out_len = 123;
+	if (dvbs2x_modulate(&mod, NULL, 1, output, &out_len) !=
+	    DVBS2X_ERR_PARAM || out_len != 0)
+		return -1;
+	out_len = 123;
+	if (dvbs2x_modulate(&mod, data, mod.bb_ctx.dfl + 1, output,
+			   &out_len) != DVBS2X_ERR_PARAM || out_len != 0)
+		return -1;
+	if (dvbs2x_modulate(&mod, data, 1, output, NULL) !=
+	    DVBS2X_ERR_PARAM)
+		return -1;
+	dvbs2x_modulator_destroy(&mod);
+	return 0;
+}
+
+static int test_bbframe_parameters(void)
+{
+	const struct dvbs2x_modcod *mc = dvbs2x_vlsnr_get_modcod(9);
+	struct dvbs2x_bb_frame_ctx ctx;
+	uint8_t *frame;
+	uint8_t data[1] = { 0 };
+	unsigned int out_len = 123;
+	int ret = -1;
+
+	if (!mc)
+		return -1;
+	dvbs2x_bb_frame_init(&ctx, mc, DVBS2X_STREAM_TS);
+	frame = calloc(mc->k_bch, 1);
+	if (!frame)
+		return -1;
+	if (dvbs2x_bb_frame_build(NULL, data, 1, frame) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_bb_frame_build(&ctx, NULL, 1, frame) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_bb_frame_build(&ctx, data, ctx.dfl + 1, frame) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_bb_frame_parse(&ctx, frame, NULL, &out_len) !=
+	    DVBS2X_ERR_PARAM || out_len != 0)
+		goto out;
+	ret = 0;
+out:
+	free(frame);
+	return ret;
+}
+
+int main(void)
+{
+	printf("DVB-S2X VL-SNR API Validation Tests\n");
+	printf("===================================\n");
+	if (test_init_parameters() < 0 ||
+	    test_modulator_parameters() < 0 ||
+	    test_bbframe_parameters() < 0) {
+		printf("FAIL\n");
+		return 1;
+	}
+	printf("PASS\n");
+	return 0;
+}
