@@ -19,10 +19,19 @@
 const struct dvbs2x_modcod *dvbs2x_vlsnr_get_modcod(unsigned int index);
 
 /*
- * dvbs2x_vlsnr_get_modcod_by_name - Get MODCOD by canonical name
- * @name: e.g. "QPSK 2/9", "BPSK 1/5", "BPSK-S 1/5"
+ * dvbs2x_vlsnr_get_modcod_name - Get the canonical name by index
+ * @index: MODCOD index (1-9)
  *
- * Returns pointer to static MODCOD descriptor, or NULL if not found.
+ * Returns a stable, unambiguous name, or NULL if the index is invalid.
+ */
+const char *dvbs2x_vlsnr_get_modcod_name(unsigned int index);
+
+/*
+ * dvbs2x_vlsnr_get_modcod_by_name - Get MODCOD by canonical name
+ * @name: canonical name returned by dvbs2x_vlsnr_get_modcod_name()
+ *
+ * Unambiguous legacy names are accepted.  Ambiguous legacy names such as
+ * "BPSK 1/5" and "BPSK 1/3" return NULL.
  */
 const struct dvbs2x_modcod *dvbs2x_vlsnr_get_modcod_by_name(const char *name);
 

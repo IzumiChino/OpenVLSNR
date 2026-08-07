@@ -219,6 +219,18 @@ vlsnr_modcod_table[DVBS2X_VLSNR_NUM_MODCODS] = {
 	},
 };
 
+static const char * const vlsnr_modcod_names[DVBS2X_VLSNR_NUM_MODCODS] = {
+	"QPSK 2/9 normal set1",
+	"BPSK 1/5 medium set1",
+	"BPSK 11/45 medium set1",
+	"BPSK 1/3 medium set1",
+	"BPSK-S 1/5 short set1 SF2",
+	"BPSK-S 11/45 short set1 SF2",
+	"BPSK 1/5 short set2",
+	"BPSK 4/15 short set2",
+	"BPSK 1/3 short set2",
+};
+
 const struct dvbs2x_modcod *dvbs2x_vlsnr_get_modcod(unsigned int index)
 {
 	if (index < 1 || index > DVBS2X_VLSNR_NUM_MODCODS)
@@ -226,24 +238,37 @@ const struct dvbs2x_modcod *dvbs2x_vlsnr_get_modcod(unsigned int index)
 	return &vlsnr_modcod_table[index - 1];
 }
 
+const char *dvbs2x_vlsnr_get_modcod_name(unsigned int index)
+{
+	if (index < 1 || index > DVBS2X_VLSNR_NUM_MODCODS)
+		return NULL;
+	return vlsnr_modcod_names[index - 1];
+}
+
 const struct dvbs2x_modcod *dvbs2x_vlsnr_get_modcod_by_name(const char *name)
 {
-	static const char *names[DVBS2X_VLSNR_NUM_MODCODS] = {
-		"QPSK 2/9",
-		"BPSK 1/5",
-		"BPSK 11/45",
-		"BPSK 1/3",
-		"BPSK-S 1/5",
-		"BPSK-S 11/45",
-		"BPSK 1/5",
-		"BPSK 4/15",
-		"BPSK 1/3",
+	static const struct {
+		const char *name;
+		unsigned int index;
+	} legacy_names[] = {
+		{ "QPSK 2/9", 1 },
+		{ "BPSK 11/45", 3 },
+		{ "BPSK-S 1/5", 5 },
+		{ "BPSK-S 11/45", 6 },
+		{ "BPSK 4/15", 8 },
 	};
-	int i;
+	unsigned int i;
+
+	if (!name)
+		return NULL;
 
 	for (i = 0; i < DVBS2X_VLSNR_NUM_MODCODS; i++) {
-		if (strcmp(name, names[i]) == 0)
+		if (strcmp(name, vlsnr_modcod_names[i]) == 0)
 			return &vlsnr_modcod_table[i];
+	}
+	for (i = 0; i < sizeof(legacy_names) / sizeof(legacy_names[0]); i++) {
+		if (strcmp(name, legacy_names[i].name) == 0)
+			return dvbs2x_vlsnr_get_modcod(legacy_names[i].index);
 	}
 	return NULL;
 }

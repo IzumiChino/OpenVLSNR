@@ -27,6 +27,7 @@
 static void test_modcod_table(void)
 {
 	const struct dvbs2x_modcod *mc;
+	const char *name;
 	unsigned int i;
 
 	printf("  MODCOD table...\n");
@@ -40,11 +41,18 @@ static void test_modcod_table(void)
 		assert(mc->k_bch < mc->n_bch);
 		assert(mc->k_ldpc == mc->xs + mc->n_bch);
 		assert(mc->k_ldpc < mc->fec_len);
+		name = dvbs2x_vlsnr_get_modcod_name(i);
+		assert(name != NULL);
+		assert(dvbs2x_vlsnr_get_modcod_by_name(name) == mc);
 	}
 
 	/* Invalid index */
 	assert(dvbs2x_vlsnr_get_modcod(0) == NULL);
 	assert(dvbs2x_vlsnr_get_modcod(10) == NULL);
+	assert(dvbs2x_vlsnr_get_modcod_name(0) == NULL);
+	assert(dvbs2x_vlsnr_get_modcod_by_name(NULL) == NULL);
+	assert(dvbs2x_vlsnr_get_modcod_by_name("BPSK 1/5") == NULL);
+	assert(dvbs2x_vlsnr_get_modcod_by_name("BPSK 1/3") == NULL);
 
 	printf("    PASS\n");
 }
