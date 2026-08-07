@@ -24,7 +24,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <time.h>
 
 #include "dvbs2x_vlsnr.h"
 
@@ -165,17 +164,18 @@ int main(int argc, char *argv[])
 {
 	unsigned int idx = (argc >= 2) ? (unsigned int)atoi(argv[1]) : 0;
 	unsigned int frames = (argc >= 3) ? (unsigned int)atoi(argv[2]) : 8;
+	unsigned int seed = (argc >= 4) ? (unsigned int)atoi(argv[3]) : 1;
 	unsigned int lo, hi, m;
 	double esn0;
 
-	srand((unsigned int)time(NULL));
+	srand(seed);
 
 	printf("DVB-S2X VL-SNR end-to-end RF BER\n");
 	printf("================================\n");
 	printf("Full chain: mod -> RRC -> [timing %.2f, freq %.0e, "
 	       "phase %.1f, AWGN] -> demod\n", RF_TIMING_OFF, RF_FREQ_OFF,
 	       RF_PHASE_OFF);
-	printf("Frames/point: %u\n", frames);
+	printf("Frames/point: %u, seed: %u\n", frames, seed);
 
 	if (idx >= 1 && idx <= DVBS2X_VLSNR_NUM_MODCODS) {
 		lo = idx;

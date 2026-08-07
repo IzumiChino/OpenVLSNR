@@ -13,7 +13,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <time.h>
 
 #include "dvbs2x_types.h"
 #include "dvbs2x_modcod.h"
@@ -207,6 +206,7 @@ int main(int argc, char *argv[])
 	unsigned int modcod_idx;
 	double esn0_db;
 	unsigned int num_frames = 10;
+	unsigned int seed = 1;
 	double ber;
 
 	/* Default: test MODCOD 9 at various Es/N0 */
@@ -217,18 +217,23 @@ int main(int argc, char *argv[])
 
 	if (argc >= 3)
 		num_frames = atoi(argv[2]);
+	if (argc >= 4)
+		seed = (unsigned int)atoi(argv[3]);
 
-	srand(time(NULL));
+	srand(seed);
 
 	printf("DVB-S2X VL-SNR BER Test\n");
 	printf("=======================\n");
-	printf("MODCOD: %u, Frames per point: %u\n\n", modcod_idx, num_frames);
+	printf("MODCOD: %u, Frames per point: %u, seed: %u\n\n",
+	       modcod_idx, num_frames, seed);
 	printf("Es/N0 (dB)    BER\n");
 	printf("----------    --------\n");
 
 	/* Test at several Es/N0 points */
 	for (esn0_db = 4.0; esn0_db >= -4.0; esn0_db -= 1.0) {
 		ber = test_ber(modcod_idx, esn0_db, num_frames);
+		if (ber < 0.0)
+			return 1;
 		printf("  %+5.1f       %.2e", esn0_db, ber);
 		if (ber == 0.0)
 			printf("  (error-free)");

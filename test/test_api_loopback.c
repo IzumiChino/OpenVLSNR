@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <time.h>
 
 #include "dvbs2x_vlsnr.h"
 
@@ -84,8 +83,7 @@ int main(int argc, char *argv[])
 	unsigned int modcod_idx = (argc >= 2) ? (unsigned int)atoi(argv[1]) : 9;
 	double esn0_db = (argc >= 3) ? atof(argv[2]) : 99.0;
 	int mode = (argc >= 4) ? atoi(argv[3]) : 0;
-	unsigned int seed = (argc >= 5) ? (unsigned)atoi(argv[4]) :
-			    (unsigned)time(NULL);
+	unsigned int seed = (argc >= 5) ? (unsigned int)atoi(argv[4]) : 1;
 	double f_off = (argc >= 6) ? atof(argv[5]) : 0.0;	/* cyc/sym */
 	double ph_off = (argc >= 7) ? atof(argv[6]) : 0.0;	/* rad */
 	double t_off = (argc >= 8) ? atof(argv[7]) : 0.0;	/* samples */
@@ -180,10 +178,12 @@ int main(int argc, char *argv[])
 			errs++;
 
 	ok = (ret == 0 && errs == 0 && rec_len >= user_bits);
-	printf("MODCOD %u Es/N0=%.1f mode=%s f=%.1e ph=%.2f t=%.2f : %s "
+	printf("MODCOD %u Es/N0=%.1f mode=%s seed=%u "
+	       "f=%.1e ph=%.2f t=%.2f : %s "
 	       "(errs=%u/%u)\n",
-	       modcod_idx, esn0_db, mode ? "RF" : "sym", f_off, ph_off, t_off,
-	       ok ? "PASS" : "FAIL", ret == 0 ? errs : user_bits, user_bits);
+	       modcod_idx, esn0_db, mode ? "RF" : "sym", seed, f_off, ph_off,
+	       t_off, ok ? "PASS" : "FAIL",
+	       ret == 0 ? errs : user_bits, user_bits);
 
 	free(user_in);
 	free(user_out);

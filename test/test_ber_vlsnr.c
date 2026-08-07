@@ -18,7 +18,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
-#include <time.h>
 
 #include "dvbs2x_types.h"
 #include "dvbs2x_modcod.h"
@@ -256,6 +255,7 @@ int main(int argc, char *argv[])
 	unsigned int modcod_idx = 5;
 	unsigned int num_frames = 30;
 	unsigned int max_iter = 200;
+	unsigned int seed = 1;
 	double esn0_db;
 	double ber;
 
@@ -265,8 +265,10 @@ int main(int argc, char *argv[])
 		num_frames = atoi(argv[2]);
 	if (argc >= 4)
 		max_iter = atoi(argv[3]);
+	if (argc >= 5)
+		seed = (unsigned int)atoi(argv[4]);
 
-	srand(time(NULL));
+	srand(seed);
 
 	{
 		const struct dvbs2x_modcod *mc;
@@ -279,9 +281,9 @@ int main(int argc, char *argv[])
 		       mc->modulation == DVBS2X_MOD_BPSK ? "BPSK" : "QPSK",
 		       mc->code_rate_num, mc->code_rate_den,
 		       mc->fec_len, mc->xs, mc->xp, mc->p_period);
-		printf("Spread: %s, Frames: %u, MaxIter: %u\n\n",
+		printf("Spread: %s, Frames: %u, MaxIter: %u, seed: %u\n\n",
 		       mc->has_spread ? "yes (x2)" : "no",
-		       num_frames, max_iter);
+		       num_frames, max_iter, seed);
 	}
 
 	printf("Es/N0 (dB)    BER\n");
@@ -290,6 +292,8 @@ int main(int argc, char *argv[])
 	for (esn0_db = -4.0; esn0_db >= -12.0; esn0_db -= 1.0) {
 		ber = test_ber_vlsnr(modcod_idx, esn0_db,
 				     num_frames, max_iter);
+		if (ber < 0.0)
+			return 1;
 		printf("  %+5.1f       %.2e", esn0_db, ber);
 		if (ber == 0.0)
 			printf("  (error-free)");

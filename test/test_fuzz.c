@@ -9,7 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 #include "dvbs2x_vlsnr.h"
 
@@ -22,6 +21,7 @@ int main(int argc, char *argv[])
 	struct dvbs2x_complex *buf;
 	uint8_t *out;
 	unsigned int iterations = FUZZ_ITERATIONS;
+	unsigned int seed = 1;
 	unsigned int i, n;
 	unsigned int nosync = 0;
 	unsigned int other = 0;
@@ -30,21 +30,28 @@ int main(int argc, char *argv[])
 
 	if (argc >= 2)
 		iterations = (unsigned int)atoi(argv[1]);
+	if (argc >= 3)
+		seed = (unsigned int)atoi(argv[2]);
 
-	srand((unsigned int)time(NULL));
+	srand(seed);
 
 	dvbs2x_library_init();
-	dvbs2x_demodulator_init(&demod, 0.35, 2, 0);
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return 1;
 
 	buf = malloc(MAX_BUF_LEN * sizeof(*buf));
 	out = malloc(65536);
-	if (!buf || !out)
+	if (!buf || !out) {
+		free(buf);
+		free(out);
+		dvbs2x_demodulator_destroy(&demod);
 		return 1;
+	}
 
 	printf("DVB-S2X VL-SNR Robustness Test\n");
 	printf("==============================\n");
-	printf("Feeding %u random buffers to demodulator...\n",
-	       iterations);
+	printf("Feeding %u random buffers with seed %u...\n",
+	       iterations, seed);
 
 	for (i = 0; i < iterations; i++) {
 		unsigned int len;
