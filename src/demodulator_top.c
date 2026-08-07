@@ -33,6 +33,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdio.h>
+#include <limits.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -361,7 +362,13 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 
 void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod)
 {
+	if (!demod)
+		return;
 	dvbs2x_ldpc_decoder_free(&demod->ldpc_dec);
+	free(demod->stream_buf);
+	demod->stream_buf = NULL;
+	demod->stream_len = 0;
+	demod->stream_cap = 0;
 }
 
 int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
@@ -750,101 +757,99 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			     unsigned int *user_len,
 			     unsigned int *consumed)
 {
-	struct dvbs2x_complex *filtered = NULL;
-	struct dvbs2x_complex *symbols = NULL;
-	unsigned int filt_len = 0, sym_len = 0;
-	unsigned int sps = demod->timing.sps;
-	unsigned int need_samples;
-	unsigned int feed_len;
+	struct dvbs2x_complex *new_buf;
+	struct dvbs2x_complex *decode_buf = NULL;
+	unsigned int min_samples;
+	unsigned int decode_len;
+	unsigned int frame_samples = 0;
+	unsigned int new_cap;
 	int ret;
 
+	if (!demod || !user_len || !consumed || !user_data ||
+	    (in_len && !input))
+		return DVBS2X_ERR_PARAM;
 	*consumed = 0;
 	*user_len = 0;
 
-	/*
-	 * Estimate samples needed for one frame.  In TRACK mode use
-	 * the known frame length; in SEARCH/ACQUIRE use the largest
-	 * possible VL-SNR frame plus acquisition margin.
-	 */
-	if (demod->state == DVBS2X_DEMOD_TRACK &&
-	    demod->expected_frame_len > 0)
-		need_samples = (demod->expected_frame_len + 128) * sps;
-	else
-		need_samples = (DVBS2X_VLSNR_FRAME_LONG +
-				DVBS2X_PLHEADER_LEN +
-				DVBS2X_VLSNR_HDR_LEN + ACQ_WINDOW) * sps;
+	if (in_len) {
+		if (in_len > UINT_MAX - demod->stream_len)
+			return DVBS2X_ERR_PARAM;
+		if (demod->stream_len + in_len > demod->stream_cap) {
+			new_cap = demod->stream_cap ? demod->stream_cap : 4096;
+			while (new_cap < demod->stream_len + in_len) {
+				if (new_cap > UINT_MAX / 2) {
+					new_cap = demod->stream_len + in_len;
+					break;
+				}
+				new_cap *= 2;
+			}
+			new_buf = realloc(demod->stream_buf,
+					  new_cap * sizeof(*new_buf));
+			if (!new_buf)
+				return DVBS2X_ERR_NOMEM;
+			demod->stream_buf = new_buf;
+			demod->stream_cap = new_cap;
+		}
+		memcpy(demod->stream_buf + demod->stream_len, input,
+		       in_len * sizeof(*input));
+		demod->stream_len += in_len;
+		*consumed = in_len;
+	}
 
-	if (in_len < need_samples) {
-		*consumed = 0;
+	/*
+	 * A short frame is the smallest decodable unit.  Keep smaller
+	 * chunks buffered without advancing any receiver state.
+	 */
+	min_samples = DVBS2X_VLSNR_FRAME_SHORT * demod->timing.sps;
+	if (demod->stream_len < min_samples)
 		return DVBS2X_ERR_SHORT;
-	}
+	if (demod->expected_frame_len &&
+	    demod->stream_len < demod->expected_frame_len * demod->timing.sps)
+		return DVBS2X_ERR_SHORT;
 
 	/*
-	 * Feed only one frame's worth of samples to the filter to
-	 * avoid processing future frames prematurely.  Add margin
-	 * for the acquisition window and filter transient.
+	 * Append zero tail samples to make the final interpolation points
+	 * available when the buffer ends exactly at a frame boundary.
 	 */
-	feed_len = need_samples;
-	if (feed_len > in_len)
-		feed_len = in_len;
-
-	/* Matched filter (persistent state across calls) */
-	filtered = malloc(feed_len * sizeof(struct dvbs2x_complex));
-	if (!filtered)
+	if (demod->stream_len > UINT_MAX - demod->rx_filter.num_taps)
+		return DVBS2X_ERR_PARAM;
+	decode_len = demod->stream_len + demod->rx_filter.num_taps;
+	decode_buf = calloc(decode_len, sizeof(*decode_buf));
+	if (!decode_buf)
 		return DVBS2X_ERR_NOMEM;
+	memcpy(decode_buf, demod->stream_buf,
+	       demod->stream_len * sizeof(*decode_buf));
+	ret = dvbs2x_demodulate(demod, decode_buf, decode_len,
+			       user_data, user_len);
+	free(decode_buf);
 
-	if (!demod->filter_primed) {
-		dvbs2x_rrc_filter_reset(&demod->rx_filter);
-		demod->filter_primed = 1;
+	if (demod->modcod) {
+		unsigned int tx_sym, field_len;
+
+		if (frame_geometry(demod->modcod, &tx_sym, &field_len) == 0) {
+			demod->expected_frame_len = DVBS2X_PLHEADER_LEN +
+				DVBS2X_VLSNR_HDR_LEN + field_len;
+			frame_samples = demod->expected_frame_len *
+				demod->timing.sps;
+		}
 	}
-	dvbs2x_rrc_filter_apply(&demod->rx_filter, input, feed_len,
-				filtered, &filt_len);
 
-	/* Symbol timing recovery (persistent mu across calls) */
-	symbols = malloc((filt_len / sps + 2) *
-			 sizeof(struct dvbs2x_complex));
-	if (!symbols) {
-		free(filtered);
-		return DVBS2X_ERR_NOMEM;
-	}
-	dvbs2x_timing_sync_process(&demod->timing, filtered, filt_len,
-				   symbols, &sym_len);
-	free(filtered);
-
-	/* Attempt frame decode at symbol level */
-	ret = dvbs2x_demodulate_symbols(demod, symbols, sym_len, 0.0,
-					user_data, user_len);
-	free(symbols);
+	if (ret == DVBS2X_ERR_SHORT)
+		return ret;
 
 	/* Update state machine */
-	if (ret == 0) {
-		/* Compute expected frame length for next prediction */
-		if (demod->modcod) {
-			unsigned int tx_sym, dfl;
-
-			if (frame_geometry(demod->modcod, &tx_sym, &dfl) == 0)
-				demod->expected_frame_len =
-					DVBS2X_PLHEADER_LEN +
-					DVBS2X_VLSNR_HDR_LEN + dfl;
-		}
-
-	}
 	dvbs2x_demod_lock_update(demod, ret == 0);
 
 	/*
-	 * Report consumed samples.  Use the known frame length
-	 * (header + data field) converted to sample rate.  Add a
-	 * small margin for the RRC filter group delay on the first
-	 * frame.
+	 * Remove exactly one decoded or identified frame.  If no header was
+	 * found, discard one sample so SEARCH can make forward progress while
+	 * retaining the rest of the acquisition window.
 	 */
-	if (demod->expected_frame_len > 0)
-		*consumed = demod->expected_frame_len * sps;
-	else
-		*consumed = (DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN +
-			     16384) * sps;
-
-	if (*consumed > in_len)
-		*consumed = in_len;
+	if (!frame_samples || frame_samples > demod->stream_len)
+		frame_samples = 1;
+	demod->stream_len -= frame_samples;
+	memmove(demod->stream_buf, demod->stream_buf + frame_samples,
+		demod->stream_len * sizeof(*demod->stream_buf));
 
 	return ret;
 }

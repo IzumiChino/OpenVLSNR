@@ -85,7 +85,9 @@ struct dvbs2x_demodulator {
 	unsigned int			consecutive_failures;
 	/* Continuous-mode persistent state */
 	unsigned int			expected_frame_len;
-	int				filter_primed;
+	struct dvbs2x_complex		*stream_buf;
+	unsigned int			stream_len;
+	unsigned int			stream_cap;
 };
 
 /*
@@ -236,13 +238,14 @@ int dvbs2x_demodulate_symbols(struct dvbs2x_demodulator *demod,
  *   ACQUIRE: AFC accumulating, narrowing frequency estimate
  *   TRACK:   predicted frame boundaries, persistent timing/carrier
  *
- * The caller feeds samples continuously.  On success (return 0),
- * one frame of user data is output and *consumed indicates how many
- * input samples were used.  On failure (return -1), *consumed still
- * indicates samples that were examined (caller should advance).
+ * Input is copied into an internal read-ahead buffer.  On return,
+ * *consumed is either in_len (the samples are owned by the demodulator)
+ * or zero if they could not be buffered.  At most one frame is returned
+ * per call.  Call again with in_len == 0 to drain buffered frames.
  *
- * The RRC matched filter and timing recovery maintain state across
- * calls, so the caller should feed contiguous sample streams.
+ * DVBS2X_ERR_SHORT means that no complete frame is buffered yet.  The
+ * caller should retain no consumed samples and should feed only new,
+ * contiguous input on the next call.
  *
  * Returns 0 on a successful frame decode, a negative DVBS2X_ERR_*
  * code on failure.
