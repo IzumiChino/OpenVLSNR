@@ -45,6 +45,7 @@ static int test_modulator_parameters(void)
 	struct dvbs2x_complex output[1];
 	uint8_t data[1] = { 0 };
 	unsigned int out_len;
+	unsigned int required;
 
 	if (dvbs2x_modulator_init(&mod, 9, 0.35, 2, 0) < 0)
 		return -1;
@@ -62,6 +63,15 @@ static int test_modulator_parameters(void)
 		return -1;
 	if (dvbs2x_modulate(&mod, data, 1, output, NULL) !=
 	    DVBS2X_ERR_PARAM)
+		return -1;
+	required = 0;
+	if (dvbs2x_modulate_ex(&mod, data, 1, output, 0, &required) !=
+	    DVBS2X_ERR_SHORT || required == 0)
+		return -1;
+	out_len = 0;
+	if (dvbs2x_modulate_symbols_ex(&mod, data, 1, output, 0,
+				       &out_len) != DVBS2X_ERR_SHORT ||
+	    out_len == 0)
 		return -1;
 	dvbs2x_modulator_destroy(&mod);
 	return 0;

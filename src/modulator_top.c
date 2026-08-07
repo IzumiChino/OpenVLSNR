@@ -23,6 +23,7 @@
  */
 
 #include "dvbs2x_vlsnr.h"
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -85,11 +86,12 @@ void dvbs2x_modulator_destroy(struct dvbs2x_modulator *mod)
  * Build the PL frame at symbol rate (no pulse shaping).
  * Returns 0 on success; *sym_len receives the number of symbols.
  */
-int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
-			    const uint8_t *user_data,
-			    unsigned int user_len,
-			    struct dvbs2x_complex *symbols,
-			    unsigned int *sym_len)
+int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
+			       const uint8_t *user_data,
+			       unsigned int user_len,
+			       struct dvbs2x_complex *symbols,
+			       unsigned int symbol_capacity,
+			       unsigned int *sym_len)
 {
 	const struct dvbs2x_modcod *mc;
 	uint8_t *bbframe = NULL;
@@ -217,6 +219,11 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 		ret = DVBS2X_ERR_PARAM;
 		goto out;
 	}
+	*sym_len = hdr_len + lay.field_len;
+	if (symbol_capacity < *sym_len) {
+		ret = DVBS2X_ERR_SHORT;
+		goto out;
+	}
 
 	/* Headers (unscrambled) */
 	dvbs2x_plheader_generate(mc->pls_code, symbols);
@@ -236,7 +243,6 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 			      lay.field_len, lay.is_pilot,
 			      mc->modulation == DVBS2X_MOD_QPSK);
 
-	*sym_len = hdr_len + lay.field_len;
 	ret = DVBS2X_OK;
 
 out:
@@ -252,11 +258,22 @@ out:
 	return ret;
 }
 
-int dvbs2x_modulate(struct dvbs2x_modulator *mod,
-		    const uint8_t *user_data,
-		    unsigned int user_len,
-		    struct dvbs2x_complex *output,
-		    unsigned int *out_len)
+int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
+			    const uint8_t *user_data,
+			    unsigned int user_len,
+			    struct dvbs2x_complex *symbols,
+			    unsigned int *sym_len)
+{
+	return dvbs2x_modulate_symbols_ex(mod, user_data, user_len, symbols,
+					  UINT_MAX, sym_len);
+}
+
+int dvbs2x_modulate_ex(struct dvbs2x_modulator *mod,
+		       const uint8_t *user_data,
+		       unsigned int user_len,
+		       struct dvbs2x_complex *output,
+		       unsigned int output_capacity,
+		       unsigned int *out_len)
 {
 	const struct dvbs2x_modcod *mc;
 	struct dvbs2x_complex *frame = NULL;
@@ -287,10 +304,19 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 	if (!frame)
 		goto out;
 
-	ret = dvbs2x_modulate_symbols(mod, user_data, user_len,
-				      frame, &frame_len);
+	ret = dvbs2x_modulate_symbols_ex(mod, user_data, user_len, frame,
+					 frame_cap, &frame_len);
 	if (ret < 0)
 		goto out;
+	if (frame_len > UINT_MAX / mod->cfg.sps) {
+		ret = DVBS2X_ERR_PARAM;
+		goto out;
+	}
+	*out_len = frame_len * mod->cfg.sps;
+	if (output_capacity < *out_len) {
+		ret = DVBS2X_ERR_SHORT;
+		goto out;
+	}
 
 	/* RRC pulse shaping (upsample by sps) */
 	dvbs2x_rrc_filter_reset(&mod->tx_filter);
@@ -303,4 +329,14 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 out:
 	free(frame);
 	return ret;
+}
+
+int dvbs2x_modulate(struct dvbs2x_modulator *mod,
+		    const uint8_t *user_data,
+		    unsigned int user_len,
+		    struct dvbs2x_complex *output,
+		    unsigned int *out_len)
+{
+	return dvbs2x_modulate_ex(mod, user_data, user_len, output,
+				  UINT_MAX, out_len);
 }

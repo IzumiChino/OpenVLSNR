@@ -134,6 +134,14 @@ int dvbs2x_modulate(struct dvbs2x_modulator *mod,
 		    struct dvbs2x_complex *output,
 		    unsigned int *out_len);
 
+/* Capacity-checked variant of dvbs2x_modulate(). */
+int dvbs2x_modulate_ex(struct dvbs2x_modulator *mod,
+		       const uint8_t *user_data,
+		       unsigned int user_len,
+		       struct dvbs2x_complex *output,
+		       unsigned int output_capacity,
+		       unsigned int *out_len);
+
 /*
  * dvbs2x_modulate_symbols - Build the PL frame at symbol rate
  * @mod: initialized modulator
@@ -153,6 +161,14 @@ int dvbs2x_modulate_symbols(struct dvbs2x_modulator *mod,
 			    unsigned int user_len,
 			    struct dvbs2x_complex *symbols,
 			    unsigned int *sym_len);
+
+/* Capacity-checked variant of dvbs2x_modulate_symbols(). */
+int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
+			       const uint8_t *user_data,
+			       unsigned int user_len,
+			       struct dvbs2x_complex *symbols,
+			       unsigned int symbol_capacity,
+			       unsigned int *sym_len);
 
 /*
  * dvbs2x_demodulator_init - Initialize demodulator
