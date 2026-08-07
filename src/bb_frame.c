@@ -38,13 +38,8 @@ void dvbs2x_bb_frame_init(struct dvbs2x_bb_frame_ctx *ctx,
 	ctx->stream_type = stream_type;
 	ctx->ro = DVBS2X_RO_0_35;	/* default; TX overrides per rolloff */
 
-	if (stream_type == DVBS2X_STREAM_TS) {
-		ctx->upl = 188 * 8;	/* TS packet = 188 bytes */
-		ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
-	} else {
-		ctx->upl = 0;
-		ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
-	}
+	ctx->upl = 0;
+	ctx->dfl = ctx->k_bch - BB_HEADER_BITS;
 }
 
 uint8_t dvbs2x_bb_crc8(const uint8_t *data, unsigned int len)
@@ -96,18 +91,15 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 
 	if (!ctx || !user_data || !bbframe)
 		return DVBS2X_ERR_PARAM;
-	dfl = ctx->dfl;
-	if (user_len > dfl)
+	if (ctx->stream_type != DVBS2X_STREAM_GS || user_len > ctx->dfl)
 		return DVBS2X_ERR_PARAM;
+	dfl = user_len;
 
 	/*
 	 * Build MATYPE-1: [TS/GS][SIS/MIS][CCM/ACM][ISSYI][NPD][RO:2].
 	 * TS,SIS,CCM,ISSYI=0,NPD=0 -> 0xF0; GS -> 0x70; low 2 bits = RO.
 	 */
-	if (ctx->stream_type == DVBS2X_STREAM_TS)
-		matype1 = 0xF0;
-	else
-		matype1 = 0x70;
+	matype1 = 0x70;
 	matype1 |= ctx->ro & 0x03;
 
 	/* Assemble header bytes */
@@ -117,7 +109,7 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 	header_bytes[3] = ctx->upl & 0xFF;
 	header_bytes[4] = (dfl >> 8) & 0xFF;
 	header_bytes[5] = dfl & 0xFF;
-	header_bytes[6] = 0x47;		/* SYNC byte for TS */
+	header_bytes[6] = 0x00;		/* not applicable to continuous GS */
 	header_bytes[7] = 0x00;		/* SYNCD high */
 	header_bytes[8] = 0x00;		/* SYNCD low */
 	header_bytes[9] = dvbs2x_bb_crc8(header_bytes, 9);
@@ -136,7 +128,7 @@ int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 		bbframe[bit_idx + i] = user_data[i];
 
 	/* Zero padding */
-	for (i = user_len; i < dfl; i++)
+	for (i = user_len; i < ctx->dfl; i++)
 		bbframe[bit_idx + i] = 0;
 
 	/* Scramble the whole BB frame (header + data field) */
@@ -184,6 +176,9 @@ int dvbs2x_bb_frame_parse_ex(const struct dvbs2x_bb_frame_ctx *ctx,
 	crc = dvbs2x_bb_crc8(header_bytes, 9);
 	if (crc != header_bytes[9])
 		return -1;
+	if ((header_bytes[0] & 0xc0) != 0x40 ||
+	    header_bytes[2] != 0 || header_bytes[3] != 0)
+		return DVBS2X_ERR_PARAM;
 
 	/* Extract DFL */
 	dfl = ((uint16_t)header_bytes[4] << 8) | header_bytes[5];

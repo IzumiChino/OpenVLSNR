@@ -671,7 +671,7 @@ int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
 	}
 
 	/* BB frame parse */
-	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_TS);
+	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_GS);
 	ret = dvbs2x_bb_frame_parse_ex(&demod->bb_ctx, bch_cw,
 				       user_data, user_capacity, user_len);
 	if (ret < 0 && ret != DVBS2X_ERR_SHORT)

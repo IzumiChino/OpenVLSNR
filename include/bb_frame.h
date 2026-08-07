@@ -19,8 +19,8 @@
 #define DVBS2X_BB_PRBS_POLY	0x6000
 
 /* Stream types */
-#define DVBS2X_STREAM_TS	0	/* Transport Stream */
-#define DVBS2X_STREAM_GS	1	/* Generic Stream */
+#define DVBS2X_STREAM_TS	0	/* TS adaptation is not implemented */
+#define DVBS2X_STREAM_GS	1	/* Generic continuous bit stream */
 
 /* MATYPE-1 roll-off field (bits 1:0) per ETSI EN 302 307-1 Table 2 */
 #define DVBS2X_RO_0_35	0
@@ -45,7 +45,7 @@ uint8_t dvbs2x_ro_from_rolloff(double rolloff);
  * dvbs2x_bb_frame_init - Initialize BB frame context
  * @ctx: BB frame context
  * @modcod: MODCOD parameters
- * @stream_type: DVBS2X_STREAM_TS or DVBS2X_STREAM_GS
+ * @stream_type: DVBS2X_STREAM_GS; TS mode is reserved and rejected
  */
 void dvbs2x_bb_frame_init(struct dvbs2x_bb_frame_ctx *ctx,
 			  const struct dvbs2x_modcod *modcod,
@@ -58,8 +58,9 @@ void dvbs2x_bb_frame_init(struct dvbs2x_bb_frame_ctx *ctx,
  * @user_len: length of user data in bits
  * @bbframe: output BB frame (k_bch bits)
  *
- * Adds BB header, user data, padding, and applies BB scrambling.
- * Returns 0 on success, -1 on error.
+ * The input is an already adapted generic continuous bit stream.  DFL is
+ * the number of input bits; unused BBFRAME capacity is padding.  This API
+ * does not accept raw 188-byte MPEG-TS packets.
  */
 int dvbs2x_bb_frame_build(const struct dvbs2x_bb_frame_ctx *ctx,
 			  const uint8_t *user_data,

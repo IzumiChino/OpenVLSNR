@@ -52,7 +52,7 @@ int dvbs2x_modulator_init(struct dvbs2x_modulator *mod,
 	mod->cfg.pl_scrambling_idx = pl_scrambling_idx;
 
 	/* Initialize BB frame context */
-	dvbs2x_bb_frame_init(&mod->bb_ctx, mc, DVBS2X_STREAM_TS);
+	dvbs2x_bb_frame_init(&mod->bb_ctx, mc, DVBS2X_STREAM_GS);
 
 	/* Initialize BCH encoder */
 	ret = dvbs2x_bch_encoder_init(&mod->bch_enc, mc);

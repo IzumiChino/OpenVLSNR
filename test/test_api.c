@@ -88,7 +88,7 @@ static int test_bbframe_parameters(void)
 
 	if (!mc)
 		return -1;
-	dvbs2x_bb_frame_init(&ctx, mc, DVBS2X_STREAM_TS);
+	dvbs2x_bb_frame_init(&ctx, mc, DVBS2X_STREAM_GS);
 	frame = calloc(mc->k_bch, 1);
 	if (!frame)
 		return -1;
@@ -100,6 +100,39 @@ static int test_bbframe_parameters(void)
 	    DVBS2X_ERR_PARAM ||
 	    dvbs2x_bb_frame_parse(&ctx, frame, NULL, &out_len) !=
 	    DVBS2X_ERR_PARAM || out_len != 0)
+		goto out;
+	ret = 0;
+out:
+	free(frame);
+	return ret;
+}
+
+static int test_bbframe_padding(void)
+{
+	const struct dvbs2x_modcod *mc = dvbs2x_vlsnr_get_modcod(9);
+	struct dvbs2x_bb_frame_ctx ctx;
+	uint8_t input[37], output[37];
+	uint8_t *frame;
+	unsigned int output_len = 0, i;
+	int ret = -1;
+
+	if (!mc)
+		return -1;
+	for (i = 0; i < sizeof(input); i++)
+		input[i] = (i * 5 + 1) & 1;
+	frame = calloc(mc->k_bch, 1);
+	if (!frame)
+		return -1;
+	dvbs2x_bb_frame_init(&ctx, mc, DVBS2X_STREAM_GS);
+	if (dvbs2x_bb_frame_build(&ctx, input, sizeof(input), frame) < 0 ||
+	    dvbs2x_bb_frame_parse_ex(&ctx, frame, output, sizeof(output),
+				     &output_len) < 0 ||
+	    output_len != sizeof(input) ||
+	    memcmp(input, output, sizeof(input)) != 0)
+		goto out;
+	dvbs2x_bb_frame_init(&ctx, mc, DVBS2X_STREAM_TS);
+	if (dvbs2x_bb_frame_build(&ctx, input, sizeof(input), frame) !=
+	    DVBS2X_ERR_PARAM)
 		goto out;
 	ret = 0;
 out:
@@ -151,6 +184,7 @@ int main(void)
 	if (test_init_parameters() < 0 ||
 	    test_modulator_parameters() < 0 ||
 	    test_bbframe_parameters() < 0 ||
+	    test_bbframe_padding() < 0 ||
 	    test_demodulator_capacity() < 0) {
 		printf("FAIL\n");
 		return 1;
