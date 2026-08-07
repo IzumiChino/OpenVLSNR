@@ -254,9 +254,10 @@ int dvbs2x_demodulate_stream(struct dvbs2x_demodulator *demod,
 			     unsigned int *user_len,
 			     unsigned int *consumed);
 
-#endif /* DVBS2X_VLSNR_H */
-
 #ifdef __cplusplus
 }
+
 #endif
+
+#endif /* DVBS2X_VLSNR_H */
 
