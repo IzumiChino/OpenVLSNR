@@ -294,6 +294,7 @@ int dvbs2x_ts_rx_push(struct dvbs2x_ts_rx *rx, const uint8_t *bbframe,
 	uint8_t previous[DVBS2X_TS_PACKET_SIZE];
 	struct dvbs2x_bb_header header;
 	unsigned int packet_bits, complete, needed, produced = 0;
+	unsigned int start = 0;
 	unsigned int i;
 	int have_previous;
 	int ret;
@@ -310,11 +311,16 @@ int dvbs2x_ts_rx_push(struct dvbs2x_ts_rx *rx, const uint8_t *bbframe,
 	    header.upl != DVBS2X_TS_PACKET_BITS || header.sync != 0x47 ||
 	    header.dfl > rx->bb.dfl)
 		return DVBS2X_ERR_PARAM;
-	if (header.syncd != (rx->packet_bits ?
-	    DVBS2X_TS_PACKET_BITS - rx->packet_bits : 0))
+	if (!rx->packet_bits && !rx->have_previous) {
+		if (header.syncd > header.dfl)
+			return DVBS2X_ERR_NOSYNC;
+		start = header.syncd;
+	} else if (header.syncd != (rx->packet_bits ?
+		   DVBS2X_TS_PACKET_BITS - rx->packet_bits : 0)) {
 		return DVBS2X_ERR_NOSYNC;
+	}
 
-	complete = (rx->packet_bits + header.dfl) /
+	complete = (rx->packet_bits + header.dfl - start) /
 		DVBS2X_TS_PACKET_BITS;
 	needed = complete;
 	if (!rx->have_previous && needed)
@@ -328,7 +334,7 @@ int dvbs2x_ts_rx_push(struct dvbs2x_ts_rx *rx, const uint8_t *bbframe,
 	memcpy(previous, rx->previous, sizeof(previous));
 	packet_bits = rx->packet_bits;
 	have_previous = rx->have_previous;
-	for (i = 0; i < header.dfl; i++) {
+	for (i = start; i < header.dfl; i++) {
 		unsigned int byte = packet_bits / 8;
 		unsigned int bit = packet_bits % 8;
 

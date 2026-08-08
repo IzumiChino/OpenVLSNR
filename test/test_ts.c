@@ -249,6 +249,45 @@ out:
 	return ret;
 }
 
+static int test_midstream_sync(void)
+{
+	const struct dvbs2x_modcod *mc = dvbs2x_vlsnr_get_modcod(9);
+	struct dvbs2x_ts_tx tx = { 0 };
+	struct dvbs2x_ts_rx rx;
+	uint8_t packet[DVBS2X_TS_PACKET_SIZE];
+	uint8_t output[16 * DVBS2X_TS_PACKET_SIZE];
+	uint8_t *frame = NULL;
+	unsigned int frame_len = 0, frame_count = 0;
+	unsigned int packet_count = 0, index;
+	int ret = -1;
+
+	if (!mc)
+		return -1;
+	frame = malloc(mc->k_bch);
+	if (!frame)
+		return -1;
+	if (dvbs2x_ts_tx_init(&tx, mc, DVBS2X_RO_0_35) < 0 ||
+	    dvbs2x_ts_rx_init(&rx, mc) < 0)
+		goto out;
+	for (index = 0; frame_count < 2; index++) {
+		make_packet(packet, index);
+		if (dvbs2x_ts_tx_push(&tx, packet, frame, mc->k_bch,
+				      &frame_len) < 0)
+			goto out;
+		if (!frame_len)
+			continue;
+		frame_count++;
+	}
+	if (dvbs2x_ts_rx_push(&rx, frame, output, 16, &packet_count) < 0 ||
+	    packet_count == 0)
+		goto out;
+	ret = 0;
+out:
+	dvbs2x_ts_tx_destroy(&tx);
+	free(frame);
+	return ret;
+}
+
 int main(void)
 {
 	unsigned int i;
@@ -273,5 +312,10 @@ int main(void)
 		return 1;
 	}
 	printf("  UP CRC-8... PASS\n");
+	if (test_midstream_sync() < 0) {
+		printf("  midstream sync... FAIL\n");
+		return 1;
+	}
+	printf("  midstream sync... PASS\n");
 	return 0;
 }
