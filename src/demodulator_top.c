@@ -64,8 +64,6 @@
 /* Limit oscillator drift without paying for transcendental calls per symbol. */
 #define DEROTATE_REANCHOR	256
 
-#define CARRIER_PLL_ALPHA	0.02
-#define CARRIER_PLL_BETA	1e-5
 
 /*
  * Frame-acquisition search window (symbols).  The demodulator expects
@@ -74,6 +72,8 @@
  * keeps acquisition cost independent of the buffer length.
  */
 #define ACQ_WINDOW	4096
+#define TRACK_SEARCH_RADIUS	256
+#define HIGH_SNR_LDPC_ITER	3
 
 /*
  * Number of payload symbols (after spreading) and the resulting
@@ -130,36 +130,29 @@ static void derotate(struct dvbs2x_complex *sym, unsigned int base,
 static void fourth_power(const struct dvbs2x_complex *sample,
 			 double *real, double *imag)
 {
-	double magnitude;
+	double power = sample->i * sample->i + sample->q * sample->q;
 	double i, q, r2, i2;
 
-	magnitude = sqrt(sample->i * sample->i + sample->q * sample->q);
-	if (magnitude <= 1e-12) {
+	if (power <= 1e-12) {
 		*real = 0.0;
 		*imag = 0.0;
 		return;
 	}
-	i = sample->i / magnitude;
-	q = sample->q / magnitude;
+	i = sample->i / sqrt(power);
+	q = sample->q / sqrt(power);
 	r2 = i * i - q * q;
 	i2 = 2.0 * i * q;
 	*real = r2 * r2 - i2 * i2;
 	*imag = 2.0 * r2 * i2;
 }
 
-/*
- * Acquire and track carrier before frame synchronization.  Every DVB-S2X
- * VL-SNR constellation point lies on a diagonal, so its fourth power removes
- * both data and pi/2-BPSK rotation.  The differential estimate initializes a
- * second-order Costas loop; the known header later resolves phase ambiguity.
- */
-static void carrier_pll_lock(struct dvbs2x_complex *symbols,
-			     unsigned int len)
+/* Remove a strong blind carrier estimate before header acquisition. */
+static void coarse_blind_carrier(struct dvbs2x_complex *symbols,
+				 unsigned int len)
 {
 	double corr_i = 0.0, corr_q = 0.0;
-	double phase_i = 0.0, phase_q = 0.0;
 	double prev_i, prev_q;
-	double frequency, phase;
+	double coherence, frequency;
 	unsigned int n;
 
 	if (len < 2)
@@ -174,35 +167,12 @@ static void carrier_pll_lock(struct dvbs2x_complex *symbols,
 		prev_i = cur_i;
 		prev_q = cur_q;
 	}
-	frequency = atan2(corr_q, corr_i) / 4.0;
-	for (n = 0; n < len; n++) {
-		double cur_i, cur_q;
-		double angle = -4.0 * frequency * (double)n;
-		double c = cos(angle), s = sin(angle);
-
-		fourth_power(&symbols[n], &cur_i, &cur_q);
-		phase_i -= cur_i * c - cur_q * s;
-		phase_q -= cur_i * s + cur_q * c;
-	}
-	phase = atan2(phase_q, phase_i) / 4.0;
-	for (n = 0; n < len; n++) {
-		double c = cos(phase), s = sin(phase);
-		double cur_i, cur_q;
-		double error;
-
-		cur_i = symbols[n].i * c + symbols[n].q * s;
-		cur_q = symbols[n].q * c - symbols[n].i * s;
-		symbols[n].i = cur_i;
-		symbols[n].q = cur_q;
-		fourth_power(&symbols[n], &cur_i, &cur_q);
-		error = atan2(-cur_q, -cur_i) / 4.0;
-		frequency += CARRIER_PLL_BETA * error;
-		phase += frequency + CARRIER_PLL_ALPHA * error;
-		while (phase > M_PI)
-			phase -= 2.0 * M_PI;
-		while (phase < -M_PI)
-			phase += 2.0 * M_PI;
-	}
+	coherence = sqrt(corr_i * corr_i + corr_q * corr_q) /
+		(double)(len - 1);
+	if (coherence < 0.2)
+		return;
+	frequency = atan2(corr_q, corr_i) / (8.0 * M_PI);
+	derotate(symbols, 0, len, frequency, 0.0);
 }
 
 /*
@@ -530,10 +500,12 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	uint8_t *bch_cw = NULL;
 	struct dvbs2x_vlsnr_layout lay = { 0, 0, 0, NULL };
 	unsigned int wh_start = 0, modcod_idx = 0;
+	unsigned int search_base = 0;
 	unsigned int search_len;
 	unsigned int data_field_len, data_start;
 	unsigned int ndata, tx_coded;
 	unsigned int iter_used = 0;
+	unsigned int ldpc_iter_limit = DVBS2X_LDPC_MAX_ITER;
 	double conf, demap_nv, nv_est, esn0_db;
 	int ret = DVBS2X_ERR_FEC;
 
@@ -565,17 +537,34 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	 */
 	if (demod->state != DVBS2X_DEMOD_SEARCH && demod->afc.freq_est != 0.0)
 		derotate(work, 0, in_len, demod->afc.freq_est, 0.0);
-	carrier_pll_lock(work, in_len);
+	coarse_blind_carrier(work, in_len);
 
 	/*
 	 * Frame sync via Walsh-Hadamard correlation, bounded to the
 	 * acquisition window (the header read still extends past it).
 	 */
-	search_len = in_len;
-	if (search_len > ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN)
-		search_len = ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN;
-	conf = dvbs2x_vlsnr_header_sync(work, search_len, SYNC_SEG_LEN,
-					&wh_start, &modcod_idx);
+	if (demod->state != DVBS2X_DEMOD_SEARCH &&
+	    demod->have_wh_prediction) {
+		if (demod->predicted_wh_start > TRACK_SEARCH_RADIUS)
+			search_base = demod->predicted_wh_start -
+				TRACK_SEARCH_RADIUS;
+		search_len = 2 * TRACK_SEARCH_RADIUS +
+			DVBS2X_VLSNR_WH_LEN;
+		if (search_len > in_len - search_base)
+			search_len = in_len - search_base;
+		conf = dvbs2x_vlsnr_header_sync(work + search_base,
+			search_len, SYNC_SEG_LEN, &wh_start, &modcod_idx);
+		wh_start += search_base;
+	} else {
+		conf = -1.0;
+	}
+	if (conf < 0.45) {
+		search_len = in_len;
+		if (search_len > ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN)
+			search_len = ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN;
+		conf = dvbs2x_vlsnr_header_sync(work, search_len,
+			SYNC_SEG_LEN, &wh_start, &modcod_idx);
+	}
 	demod->last_stats.sync_confidence = conf;
 	if (conf < 0.45) {
 		ret = DVBS2X_ERR_NOSYNC;
@@ -587,6 +576,8 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		goto out;
 	}
 	demod->modcod = mc;
+	demod->predicted_wh_start = wh_start;
+	demod->have_wh_prediction = 1;
 	demod->last_stats.modcod = modcod_idx;
 
 	if (dvbs2x_vlsnr_build_layout(mc, &lay) < 0) {
@@ -657,6 +648,10 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 
 	/* Residual phase/frequency tracking from header + pilots */
 	residual_carrier_track(work, wh_start, &lay, wh_ref + 2);
+	if (demod->symbol_sink)
+		demod->symbol_sink(work + wh_start,
+			DVBS2X_VLSNR_WH_LEN + 2 + lay.field_len,
+			demod->symbol_sink_opaque);
 
 	/* Extract payload and pilot symbols per the layout */
 	data_sym = malloc(lay.num_data * sizeof(struct dvbs2x_complex));
@@ -694,6 +689,9 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	fprintf(stderr, "[dbg] demap_nv=%.5f esn0~%.2f dB\n",
 		demap_nv, 10.0 * log10(1.0 / (2.0 * demap_nv + 1e-12)));
 #endif
+	/* BCH validation makes extended LDPC retries unnecessary at high SNR. */
+	if (esn0_db > 10.0)
+		ldpc_iter_limit = HIGH_SNR_LDPC_ITER;
 
 	tx_coded = dvbs2x_tx_coded_bits(mc);
 
@@ -783,10 +781,16 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		ret = DVBS2X_ERR_NOMEM;
 		goto out;
 	}
-	if (dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out,
-			       &iter_used) < 0)
-		ret = demod->cancel_requested ? DVBS2X_ERR_CANCELLED :
-			DVBS2X_ERR_FEC;
+	{
+		unsigned int saved_max_iter = demod->ldpc_dec.max_iter;
+
+		demod->ldpc_dec.max_iter = ldpc_iter_limit;
+		if (dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out,
+				       &iter_used) < 0)
+			ret = demod->cancel_requested ? DVBS2X_ERR_CANCELLED :
+				DVBS2X_ERR_FEC;
+		demod->ldpc_dec.max_iter = saved_max_iter;
+	}
 	demod->last_stats.ldpc_iterations = iter_used;
 	if (ret == DVBS2X_ERR_CANCELLED)
 		goto out;
@@ -858,6 +862,16 @@ void dvbs2x_demodulator_request_cancel(struct dvbs2x_demodulator *demod)
 {
 	if (demod)
 		demod->cancel_requested = 1;
+}
+
+void dvbs2x_demodulator_set_symbol_sink(struct dvbs2x_demodulator *demod,
+					dvbs2x_symbol_sink_t sink,
+					void *opaque)
+{
+	if (!demod)
+		return;
+	demod->symbol_sink = sink;
+	demod->symbol_sink_opaque = opaque;
 }
 
 int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
@@ -1034,6 +1048,7 @@ void dvbs2x_demod_lock_update(struct dvbs2x_demodulator *demod, int success)
 	demod->state = DVBS2X_DEMOD_SEARCH;
 	demod->consecutive_failures = 0;
 	demod->expected_frame_len = 0;
+	demod->have_wh_prediction = 0;
 	dvbs2x_afc_init(&demod->afc, 0.95);
 }
 

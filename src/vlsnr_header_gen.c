@@ -17,7 +17,9 @@
 
 #include "vlsnr_header.h"
 #include "dvbs2x_modcod.h"
+#include <limits.h>
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #ifndef M_PI
@@ -170,8 +172,14 @@ void dvbs2x_wh_generate(unsigned int index, int8_t *seq)
 
 /* Reference symbols for frame sync (pre-computed at init) */
 static struct dvbs2x_complex vlsnr_ref[DVBS2X_VLSNR_NUM_MODCODS]
-				      [DVBS2X_VLSNR_WH_LEN];
+	[DVBS2X_VLSNR_WH_LEN];
+static struct dvbs2x_complex sync_ref_2048[DVBS2X_VLSNR_NUM_MODCODS][2048];
+static struct dvbs2x_complex sync_ref_4096[DVBS2X_VLSNR_NUM_MODCODS][4096];
+static struct dvbs2x_complex sync_ref_8192[DVBS2X_VLSNR_NUM_MODCODS][8192];
 static int vlsnr_ref_init;
+static int sync_fft_ref_init;
+
+static void sync_fft_reference_init(void);
 
 static void do_sync_init(void)
 {
@@ -193,6 +201,102 @@ void dvbs2x_vlsnr_sync_init(void)
 {
 	if (!vlsnr_ref_init)
 		do_sync_init();
+	sync_fft_reference_init();
+}
+
+static void sync_fft(struct dvbs2x_complex *data, unsigned int len,
+		     int inverse)
+{
+	unsigned int i, j, width;
+
+	for (i = 1, j = 0; i < len; i++) {
+		unsigned int bit = len >> 1;
+
+		while (j & bit) {
+			j ^= bit;
+			bit >>= 1;
+		}
+		j ^= bit;
+		if (i < j) {
+			struct dvbs2x_complex tmp = data[i];
+
+			data[i] = data[j];
+			data[j] = tmp;
+		}
+	}
+	for (width = 2; width <= len; width <<= 1) {
+		double angle = (inverse ? 2.0 : -2.0) * M_PI /
+			(double)width;
+		double step_i = cos(angle), step_q = sin(angle);
+		unsigned int base;
+
+		for (base = 0; base < len; base += width) {
+			double wi = 1.0, wq = 0.0;
+			unsigned int half = width >> 1;
+			unsigned int n;
+
+			for (n = 0; n < half; n++) {
+				struct dvbs2x_complex even = data[base + n];
+				struct dvbs2x_complex odd = data[base + n + half];
+				double oi = odd.i * wi - odd.q * wq;
+				double oq = odd.i * wq + odd.q * wi;
+				double next_i;
+
+				data[base + n].i = even.i + oi;
+				data[base + n].q = even.q + oq;
+				data[base + n + half].i = even.i - oi;
+				data[base + n + half].q = even.q - oq;
+				next_i = wi * step_i - wq * step_q;
+				wq = wi * step_q + wq * step_i;
+				wi = next_i;
+			}
+		}
+	}
+	if (inverse) {
+		for (i = 0; i < len; i++) {
+			data[i].i /= (double)len;
+			data[i].q /= (double)len;
+		}
+	}
+}
+
+static void sync_fft_reference_init(void)
+{
+	unsigned int mc, n;
+
+	if (sync_fft_ref_init)
+		return;
+	for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+		for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++) {
+			struct dvbs2x_complex value;
+
+			value.i = vlsnr_ref[mc][DVBS2X_VLSNR_WH_LEN - 1 - n].i;
+			value.q = -vlsnr_ref[mc]
+				[DVBS2X_VLSNR_WH_LEN - 1 - n].q;
+			sync_ref_2048[mc][n] = value;
+			sync_ref_4096[mc][n] = value;
+			sync_ref_8192[mc][n] = value;
+		}
+		sync_fft(sync_ref_2048[mc], 2048, 0);
+		sync_fft(sync_ref_4096[mc], 4096, 0);
+		sync_fft(sync_ref_8192[mc], 8192, 0);
+	}
+	sync_fft_ref_init = 1;
+}
+
+static const struct dvbs2x_complex *sync_fft_reference(unsigned int fft_len,
+						       unsigned int modcod)
+{
+	switch (fft_len) {
+	case 2048:
+		return sync_ref_2048[modcod];
+	case 4096:
+		return sync_ref_4096[modcod];
+	case 8192:
+		return sync_ref_8192[modcod];
+	default:
+		return NULL;
+	}
 }
 
 double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
@@ -201,9 +305,16 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 				unsigned int *offset,
 				unsigned int *modcod_idx)
 {
+	struct dvbs2x_complex *input_fft = NULL;
+	struct dvbs2x_complex *work = NULL;
+	struct dvbs2x_complex *reference = NULL;
+	double *energy = NULL;
+	double candidate_score[DVBS2X_VLSNR_NUM_MODCODS] = { 0 };
+	unsigned int candidate_offset[DVBS2X_VLSNR_NUM_MODCODS] = { 0 };
 	double best_corr = -1.0;
 	unsigned int best_offset = 0;
 	unsigned int best_modcod = 1;
+	unsigned int fft_len, positions;
 	unsigned int mc, pos, n;
 
 	if (seg_len == 0 || seg_len > DVBS2X_VLSNR_WH_LEN)
@@ -212,60 +323,115 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 	/* Ensure references are initialized (lazy fallback) */
 	if (!vlsnr_ref_init)
 		do_sync_init();
+	sync_fft_reference_init();
 
 	if (len < DVBS2X_VLSNR_WH_LEN)
 		goto done;
+	if (len > UINT_MAX - DVBS2X_VLSNR_WH_LEN + 1)
+		goto done;
+	fft_len = 1;
+	while (fft_len < len + DVBS2X_VLSNR_WH_LEN - 1) {
+		if (fft_len > UINT_MAX / 2)
+			goto done;
+		fft_len <<= 1;
+	}
+	positions = len - DVBS2X_VLSNR_WH_LEN + 1;
+	input_fft = calloc(fft_len, sizeof(*input_fft));
+	work = calloc(fft_len, sizeof(*work));
+	reference = calloc(fft_len, sizeof(*reference));
+	energy = malloc(positions * sizeof(*energy));
+	if (!input_fft || !work || !reference || !energy)
+		goto done;
+	memcpy(input_fft, symbols, len * sizeof(*input_fft));
+	sync_fft(input_fft, fft_len, 0);
+	energy[0] = 0.0;
+	for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++)
+		energy[0] += symbols[n].i * symbols[n].i +
+			symbols[n].q * symbols[n].q;
+	for (pos = 1; pos < positions; pos++) {
+		energy[pos] = energy[pos - 1] -
+			(symbols[pos - 1].i * symbols[pos - 1].i +
+			 symbols[pos - 1].q * symbols[pos - 1].q) +
+			(symbols[pos + DVBS2X_VLSNR_WH_LEN - 1].i *
+			 symbols[pos + DVBS2X_VLSNR_WH_LEN - 1].i +
+			 symbols[pos + DVBS2X_VLSNR_WH_LEN - 1].q *
+			 symbols[pos + DVBS2X_VLSNR_WH_LEN - 1].q);
+	}
+	for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+		const struct dvbs2x_complex *reference_fft;
 
-	/* Slide a correlation window over the input */
-	for (pos = 0; pos + DVBS2X_VLSNR_WH_LEN <= len; pos++) {
-		double energy = 0.0;
-		double norm;
+		reference_fft = sync_fft_reference(fft_len, mc);
+		if (!reference_fft) {
+			memset(reference, 0, fft_len * sizeof(*reference));
+			for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++) {
+				reference[n].i = vlsnr_ref[mc]
+					[DVBS2X_VLSNR_WH_LEN - 1 - n].i;
+				reference[n].q = -vlsnr_ref[mc]
+					[DVBS2X_VLSNR_WH_LEN - 1 - n].q;
+			}
+			sync_fft(reference, fft_len, 0);
+			reference_fft = reference;
+		}
+		for (n = 0; n < fft_len; n++) {
+			work[n].i = input_fft[n].i * reference_fft[n].i -
+				input_fft[n].q * reference_fft[n].q;
+			work[n].q = input_fft[n].i * reference_fft[n].q +
+				input_fft[n].q * reference_fft[n].i;
+		}
+		sync_fft(work, fft_len, 1);
+		for (pos = 0; pos < positions; pos++) {
+			double norm, score;
+			unsigned int index = pos + DVBS2X_VLSNR_WH_LEN - 1;
 
-		for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++)
-			energy += symbols[pos + n].i * symbols[pos + n].i +
-				  symbols[pos + n].q * symbols[pos + n].q;
-		if (energy <= 0.0)
+			if (energy[pos] <= 0.0)
+				continue;
+			norm = sqrt((double)DVBS2X_VLSNR_WH_LEN *
+				    energy[pos]);
+			score = sqrt(work[index].i * work[index].i +
+				     work[index].q * work[index].q) / norm;
+			if (score > candidate_score[mc]) {
+				candidate_score[mc] = score;
+				candidate_offset[mc] = pos;
+			}
+		}
+	}
+	for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+		const struct dvbs2x_complex *rf = vlsnr_ref[mc];
+		double seg_mag = 0.0, norm;
+		unsigned int seg_start;
+
+		pos = candidate_offset[mc];
+		if (energy[pos] <= 0.0)
 			continue;
-		norm = sqrt((double)DVBS2X_VLSNR_WH_LEN * energy);
-		for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
-			const struct dvbs2x_complex *rf = vlsnr_ref[mc];
-			double seg_mag = 0.0;
-			unsigned int seg_start;
-			double corr;
+		norm = sqrt((double)DVBS2X_VLSNR_WH_LEN * energy[pos]);
+		for (seg_start = 0; seg_start < DVBS2X_VLSNR_WH_LEN;
+		     seg_start += seg_len) {
+			unsigned int seg_end = seg_start + seg_len;
+			double si = 0.0, sq = 0.0;
 
-			for (seg_start = 0;
-			     seg_start < DVBS2X_VLSNR_WH_LEN;
-			     seg_start += seg_len) {
-				unsigned int seg_end;
-				double si = 0.0, sq = 0.0;
+			if (seg_end > DVBS2X_VLSNR_WH_LEN)
+				seg_end = DVBS2X_VLSNR_WH_LEN;
+			for (n = seg_start; n < seg_end; n++) {
+				double ri = symbols[pos + n].i;
+				double rq = symbols[pos + n].q;
 
-				seg_end = seg_start + seg_len;
-				if (seg_end > DVBS2X_VLSNR_WH_LEN)
-					seg_end = DVBS2X_VLSNR_WH_LEN;
-
-				for (n = seg_start; n < seg_end; n++) {
-					double ri, rq;
-
-					ri = symbols[pos + n].i;
-					rq = symbols[pos + n].q;
-					si += ri * rf[n].i +
-					      rq * rf[n].q;
-					sq += rq * rf[n].i -
-					      ri * rf[n].q;
-				}
-				seg_mag += sqrt(si * si + sq * sq);
+				si += ri * rf[n].i + rq * rf[n].q;
+				sq += rq * rf[n].i - ri * rf[n].q;
 			}
-
-			corr = seg_mag / norm;
-			if (corr > best_corr) {
-				best_corr = corr;
-				best_offset = pos;
-				best_modcod = mc + 1;
-			}
+			seg_mag += sqrt(si * si + sq * sq);
+		}
+		if (seg_mag / norm > best_corr) {
+			best_corr = seg_mag / norm;
+			best_offset = pos;
+			best_modcod = mc + 1;
 		}
 	}
 
 done:
+	free(input_fft);
+	free(work);
+	free(reference);
+	free(energy);
 	if (offset)
 		*offset = best_offset;
 	if (modcod_idx)

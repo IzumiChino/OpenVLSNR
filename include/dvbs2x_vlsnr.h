@@ -68,6 +68,9 @@ struct dvbs2x_demod_stats {
 	int		result;
 };
 
+typedef void (*dvbs2x_symbol_sink_t)(const struct dvbs2x_complex *symbols,
+				     unsigned int len, void *opaque);
+
 /* Demodulator sync state machine */
 enum dvbs2x_demod_state {
 	DVBS2X_DEMOD_SEARCH = 0,	/* initial acquisition */
@@ -94,11 +97,15 @@ struct dvbs2x_demodulator {
 	unsigned int			consecutive_failures;
 	/* Continuous-mode persistent state */
 	unsigned int			expected_frame_len;
+	unsigned int			predicted_wh_start;
+	int				have_wh_prediction;
 	struct dvbs2x_complex		*stream_buf;
 	unsigned int			stream_len;
 	unsigned int			stream_cap;
 	struct dvbs2x_demod_stats	last_stats;
 	volatile int			cancel_requested;
+	dvbs2x_symbol_sink_t		symbol_sink;
+	void				*symbol_sink_opaque;
 };
 
 /*
@@ -234,6 +241,14 @@ int dvbs2x_demodulator_get_stats(const struct dvbs2x_demodulator *demod,
 
 /* Request cancellation of a long-running receive operation. */
 void dvbs2x_demodulator_request_cancel(struct dvbs2x_demodulator *demod);
+
+/*
+ * Observe corrected symbols synchronously.  The buffer remains valid only
+ * for the duration of the callback.
+ */
+void dvbs2x_demodulator_set_symbol_sink(struct dvbs2x_demodulator *demod,
+					dvbs2x_symbol_sink_t sink,
+					void *opaque);
 
 /*
  * dvbs2x_demodulate - Demodulate baseband IQ samples to user data

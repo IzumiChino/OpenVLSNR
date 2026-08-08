@@ -23,6 +23,7 @@ struct rx_options {
 	const char	*uri;
 	const char	*path;
 	const char	*iq_path;
+	const char	*symbol_path;
 	long long	frequency;
 	long long	symbol_rate;
 	unsigned int	sps;
@@ -54,7 +55,8 @@ static void usage(const char *name)
 		"  -g, --gain DB          manual RX gain (default %.1f)\n"
 		"  -n, --frames N         stop after N decoded PL frames\n"
 		"  -t, --seconds N        stop after N seconds\n"
-		"  -i, --iq FILE          capture interleaved float32 IQ\n",
+		"  -i, --iq FILE          capture interleaved float32 IQ\n"
+		"  -S, --symbols FILE     capture corrected float32 symbols\n",
 		name, DEFAULT_URI, DEFAULT_SYMBOL_RATE, DEFAULT_SPS,
 		DEFAULT_GAIN);
 }
@@ -106,6 +108,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		{ "frames", required_argument, NULL, 'n' },
 		{ "seconds", required_argument, NULL, 't' },
 		{ "iq", required_argument, NULL, 'i' },
+		{ "symbols", required_argument, NULL, 'S' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
@@ -116,7 +119,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	options->symbol_rate = DEFAULT_SYMBOL_RATE;
 	options->sps = DEFAULT_SPS;
 	options->gain = DEFAULT_GAIN;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:i:h",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:i:S:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -148,6 +151,9 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 			break;
 		case 'i':
 			options->iq_path = optarg;
+			break;
+		case 'S':
+			options->symbol_path = optarg;
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -263,6 +269,35 @@ static int capture_iq(FILE *output, float *capture,
 	return 0;
 }
 
+struct symbol_capture {
+	FILE	*file;
+	int	failed;
+};
+
+static void capture_symbols(const struct dvbs2x_complex *symbols,
+			    unsigned int len, void *opaque)
+{
+	struct symbol_capture *capture = opaque;
+	float buffer[2048];
+	unsigned int offset = 0;
+
+	while (offset < len && !capture->failed) {
+		unsigned int count = len - offset;
+		unsigned int i;
+
+		if (count > sizeof(buffer) / sizeof(buffer[0]) / 2)
+			count = sizeof(buffer) / sizeof(buffer[0]) / 2;
+		for (i = 0; i < count; i++) {
+			buffer[2 * i] = (float)symbols[offset + i].i;
+			buffer[2 * i + 1] = (float)symbols[offset + i].q;
+		}
+		if (fwrite(buffer, 2 * sizeof(buffer[0]), count,
+			   capture->file) != count)
+			capture->failed = 1;
+		offset += count;
+	}
+}
+
 int main(int argc, char **argv)
 {
 	struct rx_options options;
@@ -270,6 +305,7 @@ int main(int argc, char **argv)
 	struct pluto_stream stream = { 0 };
 	struct dvbs2x_demodulator demod = { 0 };
 	struct dvbs2x_ts_rx ts = { 0 };
+	struct symbol_capture symbol_capture = { 0 };
 	struct dvbs2x_complex *samples = NULL;
 	float *iq_capture = NULL;
 	uint8_t packets[RX_PACKET_CAPACITY * DVBS2X_TS_PACKET_SIZE];
@@ -286,6 +322,7 @@ int main(int argc, char **argv)
 	time_t end_time = 0;
 	FILE *output = NULL;
 	FILE *iq_output = NULL;
+	FILE *symbol_output = NULL;
 	int ret = 1;
 
 	if (parse_options(argc, argv, &options) < 0) {
@@ -304,9 +341,20 @@ int main(int argc, char **argv)
 			goto out;
 		}
 	}
+	if (options.symbol_path) {
+		symbol_output = fopen(options.symbol_path, "wb");
+		if (!symbol_output) {
+			perror(options.symbol_path);
+			goto out;
+		}
+		symbol_capture.file = symbol_output;
+	}
 	dvbs2x_library_init();
 	if (dvbs2x_demodulator_init(&demod, 0.35, options.sps, 0) < 0)
 		goto out;
+	if (symbol_output)
+		dvbs2x_demodulator_set_symbol_sink(&demod, capture_symbols,
+						   &symbol_capture);
 	bbframe = malloc(DVBS2X_LDPC_NORMAL);
 	samples = malloc(PLUTO_BUFFER_SAMPLES * sizeof(*samples));
 	if (iq_output)
@@ -351,6 +399,10 @@ int main(int argc, char **argv)
 			continue;
 		if (capture_iq(iq_output, iq_capture, samples, sample_len) < 0)
 			goto out;
+		if (symbol_capture.failed) {
+			perror("symbol capture");
+			goto out;
+		}
 		sample_count += sample_len;
 		{
 			unsigned int i;
@@ -409,6 +461,10 @@ int main(int argc, char **argv)
 				&demod, NULL, 0, bbframe, DVBS2X_LDPC_NORMAL,
 				&frame_len, &consumed);
 		}
+		if (symbol_capture.failed) {
+			perror("symbol capture");
+			goto out;
+		}
 		if (!(refill_count % 64))
 			report_status(&demod, sample_count, power_sum, frame_count,
 				      sync_failures, fec_failures, ts_failures,
@@ -438,6 +494,8 @@ out:
 	free(bbframe);
 	if (iq_output)
 		fclose(iq_output);
+	if (symbol_output)
+		fclose(symbol_output);
 	if (output && output != stdout)
 		fclose(output);
 	return ret;

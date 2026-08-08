@@ -28,6 +28,21 @@ struct stream_fixture {
 	unsigned int payload_len;
 };
 
+struct symbol_count {
+	unsigned int calls;
+	unsigned int symbols;
+};
+
+static void count_symbols(const struct dvbs2x_complex *symbols,
+			  unsigned int len, void *opaque)
+{
+	struct symbol_count *count = opaque;
+
+	(void)symbols;
+	count->calls++;
+	count->symbols += len;
+}
+
 static int test_offset_acquisition(const struct stream_fixture *fix);
 
 static void fixture_destroy(struct stream_fixture *fix)
@@ -311,6 +326,7 @@ static int test_bbframe(const struct stream_fixture *fix)
 	struct dvbs2x_bb_frame_ctx bb;
 	struct dvbs2x_demodulator demod;
 	struct dvbs2x_demod_stats stats;
+	struct symbol_count count = { 0 };
 	uint8_t *expected = NULL;
 	uint8_t *received = NULL;
 	unsigned int frame_samples = fix->sample_len / NUM_FRAMES;
@@ -319,6 +335,7 @@ static int test_bbframe(const struct stream_fixture *fix)
 
 	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
 		return -1;
+	dvbs2x_demodulator_set_symbol_sink(&demod, count_symbols, &count);
 	expected = calloc(fix->mc->k_bch, 1);
 	received = calloc(fix->mc->k_bch, 1);
 	if (!expected || !received)
@@ -336,7 +353,9 @@ static int test_bbframe(const struct stream_fixture *fix)
 		goto out;
 	if (dvbs2x_demodulator_get_stats(&demod, &stats) < 0 ||
 	    stats.result != 0 || stats.modcod != fix->mc->index ||
-	    stats.sync_confidence <= 0.0 || !stats.ldpc_iterations)
+	    stats.sync_confidence <= 0.0 || !stats.ldpc_iterations ||
+	    stats.ldpc_iterations > 3 || count.calls != 1 ||
+	    count.symbols <= DVBS2X_VLSNR_WH_LEN)
 		goto out;
 	ret = 0;
 out:

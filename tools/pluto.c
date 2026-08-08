@@ -116,6 +116,8 @@ static int stream_open(struct pluto_stream *stream,
 	}
 	iio_channel_enable(stream->i);
 	iio_channel_enable(stream->q);
+	if (iio_device_set_kernel_buffers_count(stream->dev, tx ? 4 : 64) < 0)
+		fprintf(stderr, "cannot increase Pluto kernel buffer queue\n");
 	stream->buf = iio_device_create_buffer(stream->dev, capacity, false);
 	if (!stream->buf) {
 		fprintf(stderr, "cannot create Pluto stream buffer\n");
