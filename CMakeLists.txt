@@ -96,6 +96,7 @@ if(OPENVLSNR_BUILD_PLUTO_TOOLS)
 	add_executable(openvlsnr-pluto-rx
 		tools/openvlsnr-pluto-rx.c
 		tools/pluto.c
+		tools/pluto_rx_queue.c
 	)
 	foreach(tool openvlsnr-pluto-tx openvlsnr-pluto-rx)
 		target_include_directories(${tool} PRIVATE tools)
@@ -108,4 +109,8 @@ if(OPENVLSNR_BUILD_PLUTO_TOOLS)
 			)
 		endif()
 	endforeach()
+	if(NOT WIN32)
+		find_package(Threads REQUIRED)
+		target_link_libraries(openvlsnr-pluto-rx PRIVATE Threads::Threads)
+	endif()
 endif()

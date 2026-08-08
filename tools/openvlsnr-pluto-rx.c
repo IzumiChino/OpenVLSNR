@@ -11,12 +11,14 @@
 #include <time.h>
 
 #include "pluto.h"
+#include "pluto_rx_queue.h"
 
 #define DEFAULT_URI		"ip:192.168.2.1"
 #define DEFAULT_SYMBOL_RATE	1250000
 #define DEFAULT_SPS		2
 #define DEFAULT_GAIN		40.0
 #define PLUTO_BUFFER_SAMPLES	16384
+#define RX_QUEUE_BLOCKS		256
 #define RX_PACKET_CAPACITY	16
 
 struct rx_options {
@@ -203,6 +205,7 @@ static const char *state_name(enum dvbs2x_demod_state state)
 }
 
 static void report_status(const struct dvbs2x_demodulator *demod,
+			  const struct pluto_rx_queue *queue,
 			  unsigned long long samples,
 			  double power_sum,
 			  unsigned long long decoded,
@@ -212,17 +215,23 @@ static void report_status(const struct dvbs2x_demodulator *demod,
 			  unsigned long long packets)
 {
 	struct dvbs2x_demod_stats stats;
+	unsigned long long received_samples = samples;
+	unsigned int queued = 0, high_water = 0, backpressure = 0;
 	double power_dbfs;
 
 	if (dvbs2x_demodulator_get_stats(demod, &stats) < 0)
 		return;
+	pluto_rx_queue_get_stats(queue, &received_samples, &queued, &high_water,
+				 &backpressure);
 	power_dbfs = samples ? 10.0 * log10(power_sum / (double)samples +
 					      1e-15) : -150.0;
 	fprintf(stderr,
-		"samples=%llu power=%.1f dBFS state=%s modcod=%u sync=%.3f "
+		"samples=%llu input=%llu queue=%u/%u wait=%u "
+		"power=%.1f dBFS state=%s modcod=%u sync=%.3f "
 		"Es/N0=%.2f dB LDPC=%u frames=%llu "
 		"fail(sync/fec/ts)=%llu/%llu/%llu packets=%llu\r",
-		samples, power_dbfs, state_name(demod->state), stats.modcod,
+		samples, received_samples, queued, high_water, backpressure,
+		power_dbfs, state_name(demod->state), stats.modcod,
 		stats.sync_confidence, stats.esn0_db, stats.ldpc_iterations,
 		decoded, sync_failures, fec_failures, ts_failures, packets);
 	fflush(stderr);
@@ -242,30 +251,6 @@ static int process_bbframe(struct dvbs2x_ts_rx *ts, const uint8_t *bbframe,
 	if (write_packets(output, packets, packet_count) < 0)
 		return -1;
 	*packet_total += packet_count;
-	return 0;
-}
-
-static int capture_iq(FILE *output, float *capture,
-		      const struct dvbs2x_complex *samples,
-		      unsigned int sample_count)
-{
-	unsigned int i;
-
-	if (!output)
-		return 0;
-	for (i = 0; i < sample_count; i++) {
-		capture[2 * i] = (float)samples[i].i;
-		capture[2 * i + 1] = (float)samples[i].q;
-	}
-	if (fwrite(capture, 2 * sizeof(*capture), sample_count, output) !=
-	    sample_count) {
-		perror("IQ capture");
-		return -1;
-	}
-	if (fflush(output) == EOF) {
-		perror("IQ capture");
-		return -1;
-	}
 	return 0;
 }
 
@@ -303,11 +288,10 @@ int main(int argc, char **argv)
 	struct rx_options options;
 	struct pluto_config config;
 	struct pluto_stream stream = { 0 };
+	struct pluto_rx_queue *queue = NULL;
 	struct dvbs2x_demodulator demod = { 0 };
 	struct dvbs2x_ts_rx ts = { 0 };
 	struct symbol_capture symbol_capture = { 0 };
-	struct dvbs2x_complex *samples = NULL;
-	float *iq_capture = NULL;
 	uint8_t packets[RX_PACKET_CAPACITY * DVBS2X_TS_PACKET_SIZE];
 	uint8_t *bbframe = NULL;
 	unsigned long long frame_count = 0;
@@ -356,11 +340,7 @@ int main(int argc, char **argv)
 		dvbs2x_demodulator_set_symbol_sink(&demod, capture_symbols,
 						   &symbol_capture);
 	bbframe = malloc(DVBS2X_LDPC_NORMAL);
-	samples = malloc(PLUTO_BUFFER_SAMPLES * sizeof(*samples));
-	if (iq_output)
-		iq_capture = malloc(2 * PLUTO_BUFFER_SAMPLES *
-				    sizeof(*iq_capture));
-	if (!bbframe || !samples || (iq_output && !iq_capture))
+	if (!bbframe)
 		goto out;
 	config.uri = options.uri;
 	config.frequency = options.frequency;
@@ -381,23 +361,21 @@ int main(int argc, char **argv)
 	fprintf(stderr, "MODCOD is detected from each VL-SNR header\n");
 	if (options.duration)
 		end_time = time(NULL) + options.duration;
+	if (pluto_rx_queue_start(&queue, &stream,
+				 PLUTO_BUFFER_SAMPLES, RX_QUEUE_BLOCKS,
+				 iq_output, end_time) < 0)
+		goto out;
 	while (!stop_requested) {
+		const struct dvbs2x_complex *samples;
 		unsigned int sample_len;
 		unsigned int consumed;
 		unsigned int frame_len;
 		int dret;
 
-		if (end_time && time(NULL) >= end_time)
-			break;
-		dret = pluto_rx_read(&stream, samples, PLUTO_BUFFER_SAMPLES,
-				     &sample_len);
-		if (dret < 0 && stop_requested)
+		dret = pluto_rx_queue_acquire(queue, &samples, &sample_len);
+		if (dret > 0 || (dret < 0 && stop_requested))
 			break;
 		if (dret < 0)
-			goto out;
-		if (dret > 0)
-			continue;
-		if (capture_iq(iq_output, iq_capture, samples, sample_len) < 0)
 			goto out;
 		if (symbol_capture.failed) {
 			perror("symbol capture");
@@ -413,7 +391,7 @@ int main(int argc, char **argv)
 		}
 		refill_count++;
 		if (refill_count <= 4)
-			report_status(&demod, sample_count, power_sum,
+			report_status(&demod, queue, sample_count, power_sum,
 				      frame_count, sync_failures, fec_failures,
 				      ts_failures, packet_count);
 		dret = dvbs2x_demodulate_bbframe_stream_ex(
@@ -466,9 +444,11 @@ int main(int argc, char **argv)
 			goto out;
 		}
 		if (!(refill_count % 64))
-			report_status(&demod, sample_count, power_sum, frame_count,
+			report_status(&demod, queue, sample_count, power_sum,
+				      frame_count,
 				      sync_failures, fec_failures, ts_failures,
-				      packet_count);
+					      packet_count);
+		pluto_rx_queue_release(queue);
 	}
 	if (ts.bb.k_bch) {
 		unsigned int final_count;
@@ -479,7 +459,8 @@ int main(int argc, char **argv)
 			goto out;
 		packet_count += final_count;
 	}
-	report_status(&demod, sample_count, power_sum, frame_count, sync_failures,
+	report_status(&demod, queue, sample_count, power_sum, frame_count,
+		      sync_failures,
 		      fec_failures, ts_failures, packet_count);
 	fprintf(stderr, "\nreceived %llu TS packets from %llu PL frames\n",
 		packet_count, frame_count);
@@ -487,10 +468,9 @@ int main(int argc, char **argv)
 out:
 	active_stream = NULL;
 	active_demod = NULL;
+	pluto_rx_queue_stop(queue);
 	pluto_stream_close(&stream);
 	dvbs2x_demodulator_destroy(&demod);
-	free(samples);
-	free(iq_capture);
 	free(bbframe);
 	if (iq_output)
 		fclose(iq_output);
