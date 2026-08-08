@@ -39,7 +39,14 @@ static int test_init_parameters(void)
 	if (dvbs2x_demodulator_get_stats(NULL, &stats) !=
 	    DVBS2X_ERR_PARAM ||
 	    dvbs2x_demodulator_get_stats(&demod, NULL) !=
-	    DVBS2X_ERR_PARAM)
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_demodulator_set_max_ldpc_iterations(NULL, 12) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_demodulator_set_max_ldpc_iterations(&demod, 0) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_demodulator_set_max_ldpc_iterations(
+		    &demod, DVBS2X_LDPC_MAX_ITER + 1) != DVBS2X_ERR_PARAM ||
+	    dvbs2x_demodulator_set_max_ldpc_iterations(&demod, 12) < 0)
 		return -1;
 	dvbs2x_demodulator_destroy(&demod);
 	dvbs2x_demodulator_destroy(&demod);

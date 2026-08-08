@@ -335,6 +335,8 @@ static int test_bbframe(const struct stream_fixture *fix)
 
 	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
 		return -1;
+	if (dvbs2x_demodulator_set_max_ldpc_iterations(&demod, 1) < 0)
+		goto out;
 	dvbs2x_demodulator_set_symbol_sink(&demod, count_symbols, &count);
 	expected = calloc(fix->mc->k_bch, 1);
 	received = calloc(fix->mc->k_bch, 1);
@@ -354,7 +356,7 @@ static int test_bbframe(const struct stream_fixture *fix)
 	if (dvbs2x_demodulator_get_stats(&demod, &stats) < 0 ||
 	    stats.result != 0 || stats.modcod != fix->mc->index ||
 	    stats.sync_confidence <= 0.0 || !stats.ldpc_iterations ||
-	    stats.ldpc_iterations > 3 || count.calls != 1 ||
+	    stats.ldpc_iterations != 1 || count.calls != 1 ||
 	    count.symbols <= DVBS2X_VLSNR_WH_LEN)
 		goto out;
 	ret = 0;

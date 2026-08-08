@@ -465,6 +465,7 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 
 	demod->consecutive_successes = 0;
 	demod->consecutive_failures = 0;
+	demod->max_ldpc_iterations = DVBS2X_LDPC_MAX_ITER;
 
 	return 0;
 }
@@ -505,7 +506,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	unsigned int data_field_len, data_start;
 	unsigned int ndata, tx_coded;
 	unsigned int iter_used = 0;
-	unsigned int ldpc_iter_limit = DVBS2X_LDPC_MAX_ITER;
+	unsigned int ldpc_iter_limit;
 	double conf, demap_nv, nv_est, esn0_db;
 	int ret = DVBS2X_ERR_FEC;
 
@@ -514,6 +515,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	*frame_len = 0;
 	if (!demod || !input || !bbframe || noise_var < 0.0)
 		return DVBS2X_ERR_PARAM;
+	ldpc_iter_limit = demod->max_ldpc_iterations;
 	memset(&demod->last_stats, 0, sizeof(demod->last_stats));
 	demod->last_stats.result = DVBS2X_ERR_NOSYNC;
 	if (demod->cancel_requested) {
@@ -692,7 +694,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		demap_nv, 10.0 * log10(1.0 / (2.0 * demap_nv + 1e-12)));
 #endif
 	/* BCH validation makes extended LDPC retries unnecessary at high SNR. */
-	if (esn0_db > 10.0)
+	if (esn0_db > 10.0 && ldpc_iter_limit > HIGH_SNR_LDPC_ITER)
 		ldpc_iter_limit = HIGH_SNR_LDPC_ITER;
 
 	tx_coded = dvbs2x_tx_coded_bits(mc);
@@ -864,6 +866,16 @@ void dvbs2x_demodulator_request_cancel(struct dvbs2x_demodulator *demod)
 {
 	if (demod)
 		demod->cancel_requested = 1;
+}
+
+int dvbs2x_demodulator_set_max_ldpc_iterations(
+	struct dvbs2x_demodulator *demod, unsigned int max_iterations)
+{
+	if (!demod || !max_iterations ||
+	    max_iterations > DVBS2X_LDPC_MAX_ITER)
+		return DVBS2X_ERR_PARAM;
+	demod->max_ldpc_iterations = max_iterations;
+	return DVBS2X_OK;
 }
 
 void dvbs2x_demodulator_set_symbol_sink(struct dvbs2x_demodulator *demod,

@@ -20,6 +20,7 @@
 #define PLUTO_BUFFER_SAMPLES	16384
 #define RX_QUEUE_BLOCKS		256
 #define RX_PACKET_CAPACITY	16
+#define DEFAULT_LDPC_ITERATIONS	12
 
 struct rx_options {
 	const char	*uri;
@@ -32,6 +33,7 @@ struct rx_options {
 	double		gain;
 	unsigned int	max_frames;
 	unsigned int	duration;
+	unsigned int	ldpc_iterations;
 };
 
 static volatile sig_atomic_t stop_requested;
@@ -58,9 +60,11 @@ static void usage(const char *name)
 		"  -n, --frames N         stop after N decoded PL frames\n"
 		"  -t, --seconds N        stop after N seconds\n"
 		"  -i, --iq FILE          capture interleaved float32 IQ\n"
-		"  -S, --symbols FILE     capture corrected float32 symbols\n",
+		"  -S, --symbols FILE     capture corrected float32 symbols\n"
+		"  -l, --ldpc-iterations N maximum real-time LDPC iterations "
+		"(default %d)\n",
 		name, DEFAULT_URI, DEFAULT_SYMBOL_RATE, DEFAULT_SPS,
-		DEFAULT_GAIN);
+		DEFAULT_GAIN, DEFAULT_LDPC_ITERATIONS);
 }
 
 static int parse_longlong(const char *value, long long *result)
@@ -111,6 +115,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		{ "seconds", required_argument, NULL, 't' },
 		{ "iq", required_argument, NULL, 'i' },
 		{ "symbols", required_argument, NULL, 'S' },
+		{ "ldpc-iterations", required_argument, NULL, 'l' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
@@ -121,7 +126,8 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	options->symbol_rate = DEFAULT_SYMBOL_RATE;
 	options->sps = DEFAULT_SPS;
 	options->gain = DEFAULT_GAIN;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:i:S:h",
+	options->ldpc_iterations = DEFAULT_LDPC_ITERATIONS;
+	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:i:S:l:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -157,6 +163,10 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		case 'S':
 			options->symbol_path = optarg;
 			break;
+		case 'l':
+			if (parse_uint(optarg, &options->ldpc_iterations) < 0)
+				return -1;
+			break;
 		case 'h':
 			usage(argv[0]);
 			exit(0);
@@ -167,6 +177,8 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	if (!options->frequency || optind + 1 != argc ||
 	    options->sps < 2 || options->sps > 16 ||
 	    options->symbol_rate > LLONG_MAX / options->sps ||
+	    !options->ldpc_iterations ||
+	    options->ldpc_iterations > DVBS2X_LDPC_MAX_ITER ||
 	    options->gain < 0.0 || options->gain > 73.0)
 		return -1;
 	options->path = argv[optind];
@@ -336,6 +348,9 @@ int main(int argc, char **argv)
 	dvbs2x_library_init();
 	if (dvbs2x_demodulator_init(&demod, 0.35, options.sps, 0) < 0)
 		goto out;
+	if (dvbs2x_demodulator_set_max_ldpc_iterations(
+		    &demod, options.ldpc_iterations) < 0)
+		goto out;
 	if (symbol_output)
 		dvbs2x_demodulator_set_symbol_sink(&demod, capture_symbols,
 						   &symbol_capture);
@@ -359,6 +374,8 @@ int main(int argc, char **argv)
 		(double)options.symbol_rate / 1e6,
 		(double)config.sample_rate / 1e6);
 	fprintf(stderr, "MODCOD is detected from each VL-SNR header\n");
+	fprintf(stderr, "real-time LDPC limit: %u iterations\n",
+		options.ldpc_iterations);
 	if (options.duration)
 		end_time = time(NULL) + options.duration;
 	if (pluto_rx_queue_start(&queue, &stream,

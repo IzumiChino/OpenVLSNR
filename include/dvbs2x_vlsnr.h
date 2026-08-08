@@ -95,6 +95,7 @@ struct dvbs2x_demodulator {
 	enum dvbs2x_demod_state		state;
 	unsigned int			consecutive_successes;
 	unsigned int			consecutive_failures;
+	unsigned int			max_ldpc_iterations;
 	/* Continuous-mode persistent state */
 	unsigned int			expected_frame_len;
 	unsigned int			predicted_wh_start;
@@ -241,6 +242,9 @@ int dvbs2x_demodulator_get_stats(const struct dvbs2x_demodulator *demod,
 
 /* Request cancellation of a long-running receive operation. */
 void dvbs2x_demodulator_request_cancel(struct dvbs2x_demodulator *demod);
+
+int dvbs2x_demodulator_set_max_ldpc_iterations(
+	struct dvbs2x_demodulator *demod, unsigned int max_iterations);
 
 /*
  * Observe corrected symbols synchronously.  The buffer remains valid only
