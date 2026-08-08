@@ -99,6 +99,21 @@ static int stream_open(struct pluto_stream *stream,
 		fprintf(stderr, "cannot find Pluto IQ stream channels\n");
 		goto fail;
 	}
+	if (!tx) {
+		const struct iio_data_format *i_format;
+		const struct iio_data_format *q_format;
+
+		i_format = iio_channel_get_data_format(stream->i);
+		q_format = iio_channel_get_data_format(stream->q);
+		if (!i_format || !q_format || !i_format->is_signed ||
+		    !q_format->is_signed || i_format->bits < 2 ||
+		    i_format->bits > 16 || q_format->bits != i_format->bits) {
+			fprintf(stderr, "unsupported Pluto RX sample format\n");
+			goto fail;
+		}
+		stream->sample_full_scale =
+			(double)((1U << (i_format->bits - 1)) - 1U);
+	}
 	iio_channel_enable(stream->i);
 	iio_channel_enable(stream->q);
 	stream->buf = iio_device_create_buffer(stream->dev, capacity, false);
@@ -240,8 +255,8 @@ int pluto_rx_read(struct pluto_stream *stream,
 
 		iio_channel_convert(stream->i, &si, pi);
 		iio_channel_convert(stream->q, &sq, pq);
-		samples[count].i = (double)si / INT16_MAX;
-		samples[count].q = (double)sq / INT16_MAX;
+		samples[count].i = (double)si / stream->sample_full_scale;
+		samples[count].q = (double)sq / stream->sample_full_scale;
 		pi += step;
 		pq += step;
 		count++;

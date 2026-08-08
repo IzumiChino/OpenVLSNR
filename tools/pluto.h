@@ -13,6 +13,7 @@ struct pluto_stream {
 	struct iio_channel	*q;
 	struct iio_buffer	*buf;
 	unsigned int		capacity;
+	double			sample_full_scale;
 };
 
 struct pluto_config {

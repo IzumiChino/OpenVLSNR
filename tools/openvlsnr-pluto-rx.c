@@ -2,6 +2,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <limits.h>
+#include <math.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -191,6 +192,7 @@ static const char *state_name(enum dvbs2x_demod_state state)
 
 static void report_status(const struct dvbs2x_demodulator *demod,
 			  unsigned long long samples,
+			  double power_sum,
 			  unsigned long long decoded,
 			  unsigned long long sync_failures,
 			  unsigned long long fec_failures,
@@ -198,14 +200,17 @@ static void report_status(const struct dvbs2x_demodulator *demod,
 			  unsigned long long packets)
 {
 	struct dvbs2x_demod_stats stats;
+	double power_dbfs;
 
 	if (dvbs2x_demodulator_get_stats(demod, &stats) < 0)
 		return;
+	power_dbfs = samples ? 10.0 * log10(power_sum / (double)samples +
+					      1e-15) : -150.0;
 	fprintf(stderr,
-		"samples=%llu state=%s modcod=%u sync=%.3f "
+		"samples=%llu power=%.1f dBFS state=%s modcod=%u sync=%.3f "
 		"Es/N0=%.2f dB LDPC=%u frames=%llu "
 		"fail(sync/fec/ts)=%llu/%llu/%llu packets=%llu\r",
-		samples, state_name(demod->state), stats.modcod,
+		samples, power_dbfs, state_name(demod->state), stats.modcod,
 		stats.sync_confidence, stats.esn0_db, stats.ldpc_iterations,
 		decoded, sync_failures, fec_failures, ts_failures, packets);
 	fflush(stderr);
@@ -241,6 +246,7 @@ int main(int argc, char **argv)
 	unsigned long long frame_count = 0;
 	unsigned long long packet_count = 0;
 	unsigned long long sample_count = 0;
+	double power_sum = 0.0;
 	unsigned long long sync_failures = 0;
 	unsigned long long fec_failures = 0;
 	unsigned long long ts_failures = 0;
@@ -302,7 +308,18 @@ int main(int argc, char **argv)
 		if (dret > 0)
 			continue;
 		sample_count += sample_len;
+		{
+			unsigned int i;
+
+			for (i = 0; i < sample_len; i++)
+				power_sum += samples[i].i * samples[i].i +
+					samples[i].q * samples[i].q;
+		}
 		refill_count++;
+		if (refill_count <= 4)
+			report_status(&demod, sample_count, power_sum,
+				      frame_count, sync_failures, fec_failures,
+				      ts_failures, packet_count);
 		dret = dvbs2x_demodulate_bbframe_stream_ex(
 			&demod, samples, sample_len, bbframe,
 			DVBS2X_LDPC_NORMAL, &frame_len, &consumed);
@@ -349,7 +366,7 @@ int main(int argc, char **argv)
 				&frame_len, &consumed);
 		}
 		if (!(refill_count % 64))
-			report_status(&demod, sample_count, frame_count,
+			report_status(&demod, sample_count, power_sum, frame_count,
 				      sync_failures, fec_failures, ts_failures,
 				      packet_count);
 	}
@@ -362,7 +379,7 @@ int main(int argc, char **argv)
 			goto out;
 		packet_count += final_count;
 	}
-	report_status(&demod, sample_count, frame_count, sync_failures,
+	report_status(&demod, sample_count, power_sum, frame_count, sync_failures,
 		      fec_failures, ts_failures, packet_count);
 	fprintf(stderr, "\nreceived %llu TS packets from %llu PL frames\n",
 		packet_count, frame_count);
