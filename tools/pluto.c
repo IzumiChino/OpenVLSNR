@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <time.h>
+#endif
 
 #include "pluto.h"
 
@@ -71,6 +81,10 @@ static int stream_open(struct pluto_stream *stream,
 		fprintf(stderr, "cannot open IIO context %s\n", cfg->uri);
 		goto fail;
 	}
+	if (iio_context_set_timeout(stream->ctx, 1000) < 0) {
+		fprintf(stderr, "cannot set IIO timeout\n");
+		goto fail;
+	}
 	if (configure_phy(stream->ctx, cfg, tx) < 0)
 		goto fail;
 	device_name = tx ? "cf-ad9361-dds-core-lpc" : "cf-ad9361-lpc";
@@ -124,6 +138,12 @@ void pluto_stream_close(struct pluto_stream *stream)
 	if (stream->ctx)
 		iio_context_destroy(stream->ctx);
 	memset(stream, 0, sizeof(*stream));
+}
+
+void pluto_stream_cancel(struct pluto_stream *stream)
+{
+	if (stream && stream->buf)
+		iio_buffer_cancel(stream->buf);
 }
 
 static int16_t scale_sample(double sample, double scale)
@@ -196,6 +216,16 @@ int pluto_rx_read(struct pluto_stream *stream,
 		return -1;
 	ret = iio_buffer_refill(stream->buf);
 	if (ret < 0) {
+		if (ret == -EAGAIN || ret == -ETIMEDOUT) {
+#ifdef _WIN32
+			Sleep(10);
+#else
+			const struct timespec delay = { 0, 10000000 };
+
+			nanosleep(&delay, NULL);
+#endif
+			return 1;
+		}
 		fprintf(stderr, "Pluto RX refill failed: %s\n",
 			strerror((int)-ret));
 		return -1;

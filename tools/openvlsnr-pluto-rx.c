@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "pluto.h"
 
@@ -24,14 +25,18 @@ struct rx_options {
 	long long	symbol_rate;
 	unsigned int	sps;
 	double		gain;
+	unsigned int	max_frames;
+	unsigned int	duration;
 };
 
 static volatile sig_atomic_t stop_requested;
+static struct pluto_stream *active_stream;
 
 static void stop_handler(int signal)
 {
 	(void)signal;
 	stop_requested = 1;
+	pluto_stream_cancel(active_stream);
 }
 
 static void usage(const char *name)
@@ -42,7 +47,9 @@ static void usage(const char *name)
 		"  -f, --frequency HZ     RF center frequency\n"
 		"  -r, --symbol-rate HZ   symbol rate (default %d)\n"
 		"  -s, --sps N            samples per symbol (default %d)\n"
-		"  -g, --gain DB          manual RX gain (default %.1f)\n",
+		"  -g, --gain DB          manual RX gain (default %.1f)\n"
+		"  -n, --frames N         stop after N decoded PL frames\n"
+		"  -t, --seconds N        stop after N seconds\n",
 		name, DEFAULT_URI, DEFAULT_SYMBOL_RATE, DEFAULT_SPS,
 		DEFAULT_GAIN);
 }
@@ -91,6 +98,8 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		{ "symbol-rate", required_argument, NULL, 'r' },
 		{ "sps", required_argument, NULL, 's' },
 		{ "gain", required_argument, NULL, 'g' },
+		{ "frames", required_argument, NULL, 'n' },
+		{ "seconds", required_argument, NULL, 't' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
@@ -101,7 +110,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	options->symbol_rate = DEFAULT_SYMBOL_RATE;
 	options->sps = DEFAULT_SPS;
 	options->gain = DEFAULT_GAIN;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:g:h",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -121,6 +130,14 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 			break;
 		case 'g':
 			if (parse_double(optarg, &options->gain) < 0)
+				return -1;
+			break;
+		case 'n':
+			if (parse_uint(optarg, &options->max_frames) < 0)
+				return -1;
+			break;
+		case 't':
+			if (parse_uint(optarg, &options->duration) < 0)
 				return -1;
 			break;
 		case 'h':
@@ -149,7 +166,47 @@ static int write_packets(FILE *output, const uint8_t *packets,
 		perror("TS output");
 		return -1;
 	}
+	if (fflush(output) == EOF) {
+		perror("TS output");
+		return -1;
+	}
 	return 0;
+}
+
+static const char *state_name(enum dvbs2x_demod_state state)
+{
+	switch (state) {
+	case DVBS2X_DEMOD_SEARCH:
+		return "SEARCH";
+	case DVBS2X_DEMOD_ACQUIRE:
+		return "ACQUIRE";
+	case DVBS2X_DEMOD_TRACK:
+		return "TRACK";
+	default:
+		return "UNKNOWN";
+	}
+}
+
+static void report_status(const struct dvbs2x_demodulator *demod,
+			  unsigned long long samples,
+			  unsigned long long decoded,
+			  unsigned long long sync_failures,
+			  unsigned long long fec_failures,
+			  unsigned long long ts_failures,
+			  unsigned long long packets)
+{
+	struct dvbs2x_demod_stats stats;
+
+	if (dvbs2x_demodulator_get_stats(demod, &stats) < 0)
+		return;
+	fprintf(stderr,
+		"samples=%llu state=%s modcod=%u sync=%.3f "
+		"Es/N0=%.2f dB LDPC=%u frames=%llu "
+		"fail(sync/fec/ts)=%llu/%llu/%llu packets=%llu\r",
+		samples, state_name(demod->state), stats.modcod,
+		stats.sync_confidence, stats.esn0_db, stats.ldpc_iterations,
+		decoded, sync_failures, fec_failures, ts_failures, packets);
+	fflush(stderr);
 }
 
 static int process_bbframe(struct dvbs2x_ts_rx *ts, const uint8_t *bbframe,
@@ -181,6 +238,13 @@ int main(int argc, char **argv)
 	uint8_t *bbframe = NULL;
 	unsigned long long frame_count = 0;
 	unsigned long long packet_count = 0;
+	unsigned long long sample_count = 0;
+	unsigned long long sync_failures = 0;
+	unsigned long long fec_failures = 0;
+	unsigned long long ts_failures = 0;
+	unsigned int refill_count = 0;
+	unsigned int announced_modcod = 0;
+	time_t end_time = 0;
 	FILE *output = NULL;
 	int ret = 1;
 
@@ -207,6 +271,7 @@ int main(int argc, char **argv)
 	config.gain = options.gain;
 	if (pluto_rx_open(&stream, &config, PLUTO_BUFFER_SAMPLES) < 0)
 		goto out;
+	active_stream = &stream;
 	if (signal(SIGINT, stop_handler) == SIG_ERR ||
 	    signal(SIGTERM, stop_handler) == SIG_ERR)
 		goto out;
@@ -214,20 +279,41 @@ int main(int argc, char **argv)
 		(double)options.frequency / 1e6,
 		(double)options.symbol_rate / 1e6,
 		(double)config.sample_rate / 1e6);
+	fprintf(stderr, "MODCOD is detected from each VL-SNR header\n");
+	if (options.duration)
+		end_time = time(NULL) + options.duration;
 	while (!stop_requested) {
 		unsigned int sample_len;
 		unsigned int consumed;
 		unsigned int frame_len;
 		int dret;
 
-		if (pluto_rx_read(&stream, samples, PLUTO_BUFFER_SAMPLES,
-				  &sample_len) < 0)
+		if (end_time && time(NULL) >= end_time)
+			break;
+		dret = pluto_rx_read(&stream, samples, PLUTO_BUFFER_SAMPLES,
+				     &sample_len);
+		if (dret < 0 && stop_requested)
+			break;
+		if (dret < 0)
 			goto out;
+		if (dret > 0)
+			continue;
+		sample_count += sample_len;
+		refill_count++;
 		dret = dvbs2x_demodulate_bbframe_stream_ex(
 			&demod, samples, sample_len, bbframe,
 			DVBS2X_LDPC_NORMAL, &frame_len, &consumed);
 		while (dret != DVBS2X_ERR_SHORT) {
 			if (dret == 0) {
+				frame_count++;
+				if (demod.modcod &&
+				    announced_modcod != demod.modcod->index) {
+					announced_modcod = demod.modcod->index;
+					fprintf(stderr, "\ndetected MODCOD %u: %s\n",
+						demod.modcod->index,
+							dvbs2x_vlsnr_get_modcod_name(
+							demod.modcod->index));
+				}
 				if (!demod.modcod ||
 				    (!ts.bb.k_bch &&
 				     dvbs2x_ts_rx_init(&ts, demod.modcod) < 0))
@@ -239,10 +325,19 @@ int main(int argc, char **argv)
 				}
 				dret = process_bbframe(&ts, bbframe, packets, output,
 							&packet_count);
-				if (dret == 0)
-					frame_count++;
-				else
+				if (dret < 0) {
+					ts_failures++;
 					dvbs2x_ts_rx_reset(&ts);
+				}
+			} else if (dret == DVBS2X_ERR_NOSYNC) {
+				sync_failures++;
+			} else {
+				fec_failures++;
+			}
+			if (options.max_frames &&
+			    frame_count >= options.max_frames) {
+				stop_requested = 1;
+				break;
 			}
 			frame_len = 0;
 			consumed = 0;
@@ -250,6 +345,10 @@ int main(int argc, char **argv)
 				&demod, NULL, 0, bbframe, DVBS2X_LDPC_NORMAL,
 				&frame_len, &consumed);
 		}
+		if (!(refill_count % 64))
+			report_status(&demod, sample_count, frame_count,
+				      sync_failures, fec_failures, ts_failures,
+				      packet_count);
 	}
 	if (ts.bb.k_bch) {
 		unsigned int final_count;
@@ -260,10 +359,13 @@ int main(int argc, char **argv)
 			goto out;
 		packet_count += final_count;
 	}
-	fprintf(stderr, "received %llu TS packets from %llu PL frames\n",
+	report_status(&demod, sample_count, frame_count, sync_failures,
+		      fec_failures, ts_failures, packet_count);
+	fprintf(stderr, "\nreceived %llu TS packets from %llu PL frames\n",
 		packet_count, frame_count);
 	ret = 0;
 out:
+	active_stream = NULL;
 	pluto_stream_close(&stream);
 	dvbs2x_demodulator_destroy(&demod);
 	free(samples);

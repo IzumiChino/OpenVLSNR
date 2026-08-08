@@ -28,6 +28,7 @@ int pluto_tx_open(struct pluto_stream *stream,
 int pluto_rx_open(struct pluto_stream *stream,
 		  const struct pluto_config *cfg, unsigned int capacity);
 void pluto_stream_close(struct pluto_stream *stream);
+void pluto_stream_cancel(struct pluto_stream *stream);
 int pluto_tx_write(struct pluto_stream *stream,
 		   const struct dvbs2x_complex *samples,
 		   unsigned int sample_count, double scale);
