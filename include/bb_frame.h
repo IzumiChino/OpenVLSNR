@@ -147,4 +147,14 @@ int dvbs2x_ts_rx_push(struct dvbs2x_ts_rx *rx, const uint8_t *bbframe,
 		      uint8_t *packets, unsigned int packet_capacity,
 		      unsigned int *packet_count);
 
+/*
+ * End a finite TS stream and return its last complete packet.  The UP CRC
+ * for a packet is carried by the following packet, so this explicit path
+ * returns the held packet without CRC verification.
+ */
+int dvbs2x_ts_rx_finalize_unchecked(struct dvbs2x_ts_rx *rx,
+				    uint8_t *packet,
+				    unsigned int packet_capacity,
+				    unsigned int *packet_count);
+
 #endif /* DVBS2X_BB_FRAME_H */

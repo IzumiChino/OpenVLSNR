@@ -369,6 +369,28 @@ int dvbs2x_ts_rx_push(struct dvbs2x_ts_rx *rx, const uint8_t *bbframe,
 	return 0;
 }
 
+int dvbs2x_ts_rx_finalize_unchecked(struct dvbs2x_ts_rx *rx,
+				    uint8_t *packet,
+				    unsigned int packet_capacity,
+				    unsigned int *packet_count)
+{
+	if (!packet_count)
+		return DVBS2X_ERR_PARAM;
+	*packet_count = 0;
+	if (!rx || !packet)
+		return DVBS2X_ERR_PARAM;
+	if (rx->have_previous && !packet_capacity) {
+		*packet_count = 1;
+		return DVBS2X_ERR_SHORT;
+	}
+	if (rx->have_previous) {
+		memcpy(packet, rx->previous, DVBS2X_TS_PACKET_SIZE);
+		*packet_count = 1;
+	}
+	dvbs2x_ts_rx_reset(rx);
+	return 0;
+}
+
 int dvbs2x_bb_frame_parse_ex(const struct dvbs2x_bb_frame_ctx *ctx,
 			     const uint8_t *bbframe,
 			     uint8_t *user_data,

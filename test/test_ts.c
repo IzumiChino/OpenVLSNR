@@ -142,6 +142,19 @@ static int test_vector(const struct ts_vector *vector)
 	}
 	if (frame_count != TEST_FRAMES || recovered == 0)
 		goto out;
+	if (dvbs2x_ts_rx_finalize_unchecked(&rx, output, 0,
+					      &output_count) != DVBS2X_ERR_SHORT ||
+	    output_count != 1)
+		goto out;
+	if (dvbs2x_ts_rx_finalize_unchecked(&rx, output, 1,
+					      &output_count) < 0 ||
+	    output_count != 1 ||
+	    memcmp(output, source[recovered], DVBS2X_TS_PACKET_SIZE) != 0)
+		goto out;
+	recovered++;
+	if (dvbs2x_ts_rx_finalize_unchecked(&rx, output, 1,
+					      &output_count) < 0 || output_count != 0)
+		goto out;
 	ret = 0;
 out:
 	dvbs2x_ts_tx_destroy(&tx);
@@ -182,6 +195,15 @@ static int test_parameters(void)
 		goto out;
 	if (dvbs2x_ts_rx_push(NULL, frame, output, 1, &len) !=
 	    DVBS2X_ERR_PARAM || len != 0)
+		goto out;
+	if (dvbs2x_ts_rx_finalize_unchecked(NULL, output, 1, &len) !=
+	    DVBS2X_ERR_PARAM || len != 0)
+		goto out;
+	if (dvbs2x_ts_rx_finalize_unchecked(&rx, NULL, 1, &len) !=
+	    DVBS2X_ERR_PARAM || len != 0)
+		goto out;
+	if (dvbs2x_ts_rx_finalize_unchecked(&rx, output, 1, NULL) !=
+	    DVBS2X_ERR_PARAM)
 		goto out;
 	ret = 0;
 out:
