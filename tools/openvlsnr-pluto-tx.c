@@ -292,6 +292,8 @@ int main(int argc, char **argv)
 		frame_count++;
 		report_progress(frame_count, config.sample_rate);
 	}
+	if (pluto_tx_flush(&stream) < 0)
+		goto out;
 	fprintf(stderr, "\nsent %llu TS packets in %llu PL frames\n",
 		packet_count, frame_count);
 	ret = 0;

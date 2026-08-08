@@ -13,6 +13,7 @@ struct pluto_stream {
 	struct iio_channel	*q;
 	struct iio_buffer	*buf;
 	unsigned int		capacity;
+	unsigned int		pending;
 	double			sample_full_scale;
 };
 
@@ -33,6 +34,7 @@ void pluto_stream_cancel(struct pluto_stream *stream);
 int pluto_tx_write(struct pluto_stream *stream,
 		   const struct dvbs2x_complex *samples,
 		   unsigned int sample_count, double scale);
+int pluto_tx_flush(struct pluto_stream *stream);
 int pluto_rx_read(struct pluto_stream *stream,
 		  struct dvbs2x_complex *samples,
 		  unsigned int sample_capacity, unsigned int *sample_count);

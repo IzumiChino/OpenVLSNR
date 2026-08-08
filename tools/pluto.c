@@ -189,10 +189,12 @@ int pluto_tx_write(struct pluto_stream *stream,
 		unsigned int i;
 		ssize_t ret;
 
-		if (count > stream->capacity)
-			count = stream->capacity;
-		pi = iio_buffer_first(stream->buf, stream->i);
-		pq = iio_buffer_first(stream->buf, stream->q);
+		if (count > stream->capacity - stream->pending)
+			count = stream->capacity - stream->pending;
+		pi = iio_buffer_first(stream->buf, stream->i) +
+			(ptrdiff_t)stream->pending * step;
+		pq = iio_buffer_first(stream->buf, stream->q) +
+			(ptrdiff_t)stream->pending * step;
 		for (i = 0; i < count; i++) {
 			int16_t si = scale_sample(samples[offset + i].i, scale);
 			int16_t sq = scale_sample(samples[offset + i].q, scale);
@@ -202,14 +204,37 @@ int pluto_tx_write(struct pluto_stream *stream,
 			pi += step;
 			pq += step;
 		}
-		ret = iio_buffer_push_partial(stream->buf, count);
-		if (ret < 0) {
-			fprintf(stderr, "Pluto TX push failed: %s\n",
-				strerror((int)-ret));
-			return -1;
+		stream->pending += count;
+		if (stream->pending == stream->capacity) {
+			ret = iio_buffer_push_partial(stream->buf,
+						      stream->capacity);
+			if (ret < 0) {
+				fprintf(stderr, "Pluto TX push failed: %s\n",
+					strerror((int)-ret));
+				return -1;
+			}
+			stream->pending = 0;
 		}
 		offset += count;
 	}
+	return 0;
+}
+
+int pluto_tx_flush(struct pluto_stream *stream)
+{
+	ssize_t ret;
+
+	if (!stream || !stream->buf)
+		return -1;
+	if (!stream->pending)
+		return 0;
+	ret = iio_buffer_push_partial(stream->buf, stream->pending);
+	if (ret < 0) {
+		fprintf(stderr, "Pluto TX push failed: %s\n",
+			strerror((int)-ret));
+		return -1;
+	}
+	stream->pending = 0;
 	return 0;
 }
 
