@@ -693,8 +693,10 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	fprintf(stderr, "[dbg] demap_nv=%.5f esn0~%.2f dB\n",
 		demap_nv, 10.0 * log10(1.0 / (2.0 * demap_nv + 1e-12)));
 #endif
-	/* BCH validation makes extended LDPC retries unnecessary at high SNR. */
-	if (esn0_db > 10.0 && ldpc_iter_limit > HIGH_SNR_LDPC_ITER)
+	/* Spend a configured real-time budget only on marginal frames. */
+	if (ldpc_iter_limit > HIGH_SNR_LDPC_ITER &&
+	    ((ldpc_iter_limit == DVBS2X_LDPC_MAX_ITER && esn0_db > 10.0) ||
+	     (ldpc_iter_limit != DVBS2X_LDPC_MAX_ITER && esn0_db > 14.0)))
 		ldpc_iter_limit = HIGH_SNR_LDPC_ITER;
 
 	tx_coded = dvbs2x_tx_coded_bits(mc);
