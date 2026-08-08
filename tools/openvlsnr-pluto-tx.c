@@ -238,6 +238,7 @@ int main(int argc, char **argv)
 	config.sample_rate = options.symbol_rate * options.sps;
 	config.bandwidth = options.symbol_rate * 135 / 100;
 	config.gain = options.gain;
+	config.gain_mode = "manual";
 	if (pluto_tx_open(&stream, &config, PLUTO_BUFFER_SAMPLES) < 0)
 		goto out;
 	fprintf(stderr, "TX %.3f MHz, %.3f Msym/s, %.3f MS/s, MODCOD %u\n",

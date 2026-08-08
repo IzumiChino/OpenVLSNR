@@ -27,6 +27,7 @@ struct rx_options {
 	const char	*path;
 	const char	*iq_path;
 	const char	*symbol_path;
+	const char	*gain_mode;
 	long long	frequency;
 	long long	symbol_rate;
 	unsigned int	sps;
@@ -57,6 +58,8 @@ static void usage(const char *name)
 		"  -r, --symbol-rate HZ   symbol rate (default %d)\n"
 		"  -s, --sps N            samples per symbol (default %d)\n"
 		"  -g, --gain DB          manual RX gain (default %.1f)\n"
+		"  -a, --agc MODE         manual, slow_attack, fast_attack, or "
+		"hybrid\n"
 		"  -n, --frames N         stop after N decoded PL frames\n"
 		"  -t, --seconds N        stop after N seconds\n"
 		"  -i, --iq FILE          capture interleaved float32 IQ\n"
@@ -111,6 +114,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		{ "symbol-rate", required_argument, NULL, 'r' },
 		{ "sps", required_argument, NULL, 's' },
 		{ "gain", required_argument, NULL, 'g' },
+		{ "agc", required_argument, NULL, 'a' },
 		{ "frames", required_argument, NULL, 'n' },
 		{ "seconds", required_argument, NULL, 't' },
 		{ "iq", required_argument, NULL, 'i' },
@@ -126,8 +130,9 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	options->symbol_rate = DEFAULT_SYMBOL_RATE;
 	options->sps = DEFAULT_SPS;
 	options->gain = DEFAULT_GAIN;
+	options->gain_mode = "manual";
 	options->ldpc_iterations = DEFAULT_LDPC_ITERATIONS;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:i:S:l:h",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:g:a:n:t:i:S:l:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -148,6 +153,9 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		case 'g':
 			if (parse_double(optarg, &options->gain) < 0)
 				return -1;
+			break;
+		case 'a':
+			options->gain_mode = optarg;
 			break;
 		case 'n':
 			if (parse_uint(optarg, &options->max_frames) < 0)
@@ -179,7 +187,11 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	    options->symbol_rate > LLONG_MAX / options->sps ||
 	    !options->ldpc_iterations ||
 	    options->ldpc_iterations > DVBS2X_LDPC_MAX_ITER ||
-	    options->gain < 0.0 || options->gain > 73.0)
+	    options->gain < 0.0 || options->gain > 73.0 ||
+	    (strcmp(options->gain_mode, "manual") &&
+	     strcmp(options->gain_mode, "slow_attack") &&
+	     strcmp(options->gain_mode, "fast_attack") &&
+	     strcmp(options->gain_mode, "hybrid")))
 		return -1;
 	options->path = argv[optind];
 	return 0;
@@ -362,6 +374,7 @@ int main(int argc, char **argv)
 	config.sample_rate = options.symbol_rate * options.sps;
 	config.bandwidth = options.symbol_rate * 135 / 100;
 	config.gain = options.gain;
+	config.gain_mode = options.gain_mode;
 	if (pluto_rx_open(&stream, &config, PLUTO_BUFFER_SAMPLES) < 0)
 		goto out;
 	active_stream = &stream;
@@ -374,6 +387,11 @@ int main(int argc, char **argv)
 		(double)options.symbol_rate / 1e6,
 		(double)config.sample_rate / 1e6);
 	fprintf(stderr, "MODCOD is detected from each VL-SNR header\n");
+	fprintf(stderr, "RX gain control: %s",
+		options.gain_mode);
+	if (!strcmp(options.gain_mode, "manual"))
+		fprintf(stderr, " %.1f dB", options.gain);
+	fputc('\n', stderr);
 	fprintf(stderr, "real-time LDPC limit: %u iterations\n",
 		options.ldpc_iterations);
 	if (options.duration)

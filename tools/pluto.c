@@ -59,7 +59,9 @@ static int configure_phy(struct iio_context *ctx,
 			return -1;
 	} else {
 		if (iio_channel_attr_write(channel, "gain_control_mode",
-					   "manual") < 0 ||
+					   cfg->gain_mode) < 0)
+			return -1;
+		if (!strcmp(cfg->gain_mode, "manual") &&
 		    iio_channel_attr_write_double(channel, "hardwaregain",
 						  cfg->gain) < 0)
 			return -1;
@@ -73,7 +75,7 @@ static int stream_open(struct pluto_stream *stream,
 {
 	const char *device_name;
 
-	if (!stream || !cfg || !cfg->uri || !capacity)
+	if (!stream || !cfg || !cfg->uri || !cfg->gain_mode || !capacity)
 		return -1;
 	memset(stream, 0, sizeof(*stream));
 	stream->ctx = iio_create_context_from_uri(cfg->uri);

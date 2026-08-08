@@ -23,6 +23,7 @@ struct pluto_config {
 	long long	sample_rate;
 	long long	bandwidth;
 	double		gain;
+	const char	*gain_mode;
 };
 
 int pluto_tx_open(struct pluto_stream *stream,
