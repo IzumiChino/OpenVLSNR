@@ -22,6 +22,7 @@
 struct rx_options {
 	const char	*uri;
 	const char	*path;
+	const char	*iq_path;
 	long long	frequency;
 	long long	symbol_rate;
 	unsigned int	sps;
@@ -52,7 +53,8 @@ static void usage(const char *name)
 		"  -s, --sps N            samples per symbol (default %d)\n"
 		"  -g, --gain DB          manual RX gain (default %.1f)\n"
 		"  -n, --frames N         stop after N decoded PL frames\n"
-		"  -t, --seconds N        stop after N seconds\n",
+		"  -t, --seconds N        stop after N seconds\n"
+		"  -i, --iq FILE          capture interleaved float32 IQ\n",
 		name, DEFAULT_URI, DEFAULT_SYMBOL_RATE, DEFAULT_SPS,
 		DEFAULT_GAIN);
 }
@@ -103,6 +105,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		{ "gain", required_argument, NULL, 'g' },
 		{ "frames", required_argument, NULL, 'n' },
 		{ "seconds", required_argument, NULL, 't' },
+		{ "iq", required_argument, NULL, 'i' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
@@ -113,7 +116,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	options->symbol_rate = DEFAULT_SYMBOL_RATE;
 	options->sps = DEFAULT_SPS;
 	options->gain = DEFAULT_GAIN;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:h",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:g:n:t:i:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -142,6 +145,9 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		case 't':
 			if (parse_uint(optarg, &options->duration) < 0)
 				return -1;
+			break;
+		case 'i':
+			options->iq_path = optarg;
 			break;
 		case 'h':
 			usage(argv[0]);
@@ -233,6 +239,30 @@ static int process_bbframe(struct dvbs2x_ts_rx *ts, const uint8_t *bbframe,
 	return 0;
 }
 
+static int capture_iq(FILE *output, float *capture,
+		      const struct dvbs2x_complex *samples,
+		      unsigned int sample_count)
+{
+	unsigned int i;
+
+	if (!output)
+		return 0;
+	for (i = 0; i < sample_count; i++) {
+		capture[2 * i] = (float)samples[i].i;
+		capture[2 * i + 1] = (float)samples[i].q;
+	}
+	if (fwrite(capture, 2 * sizeof(*capture), sample_count, output) !=
+	    sample_count) {
+		perror("IQ capture");
+		return -1;
+	}
+	if (fflush(output) == EOF) {
+		perror("IQ capture");
+		return -1;
+	}
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	struct rx_options options;
@@ -241,6 +271,7 @@ int main(int argc, char **argv)
 	struct dvbs2x_demodulator demod = { 0 };
 	struct dvbs2x_ts_rx ts = { 0 };
 	struct dvbs2x_complex *samples = NULL;
+	float *iq_capture = NULL;
 	uint8_t packets[RX_PACKET_CAPACITY * DVBS2X_TS_PACKET_SIZE];
 	uint8_t *bbframe = NULL;
 	unsigned long long frame_count = 0;
@@ -254,6 +285,7 @@ int main(int argc, char **argv)
 	unsigned int announced_modcod = 0;
 	time_t end_time = 0;
 	FILE *output = NULL;
+	FILE *iq_output = NULL;
 	int ret = 1;
 
 	if (parse_options(argc, argv, &options) < 0) {
@@ -265,12 +297,22 @@ int main(int argc, char **argv)
 		perror(options.path);
 		return 1;
 	}
+	if (options.iq_path) {
+		iq_output = fopen(options.iq_path, "wb");
+		if (!iq_output) {
+			perror(options.iq_path);
+			goto out;
+		}
+	}
 	dvbs2x_library_init();
 	if (dvbs2x_demodulator_init(&demod, 0.35, options.sps, 0) < 0)
 		goto out;
 	bbframe = malloc(DVBS2X_LDPC_NORMAL);
 	samples = malloc(PLUTO_BUFFER_SAMPLES * sizeof(*samples));
-	if (!bbframe || !samples)
+	if (iq_output)
+		iq_capture = malloc(2 * PLUTO_BUFFER_SAMPLES *
+				    sizeof(*iq_capture));
+	if (!bbframe || !samples || (iq_output && !iq_capture))
 		goto out;
 	config.uri = options.uri;
 	config.frequency = options.frequency;
@@ -307,6 +349,8 @@ int main(int argc, char **argv)
 			goto out;
 		if (dret > 0)
 			continue;
+		if (capture_iq(iq_output, iq_capture, samples, sample_len) < 0)
+			goto out;
 		sample_count += sample_len;
 		{
 			unsigned int i;
@@ -390,7 +434,10 @@ out:
 	pluto_stream_close(&stream);
 	dvbs2x_demodulator_destroy(&demod);
 	free(samples);
+	free(iq_capture);
 	free(bbframe);
+	if (iq_output)
+		fclose(iq_output);
 	if (output && output != stdout)
 		fclose(output);
 	return ret;
