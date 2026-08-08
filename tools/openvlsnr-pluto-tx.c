@@ -26,6 +26,7 @@ struct tx_options {
 	unsigned int	modcod;
 	double		gain;
 	double		scale;
+	int		repeat;
 };
 
 static void usage(const char *name)
@@ -38,7 +39,8 @@ static void usage(const char *name)
 		"  -s, --sps N            samples per symbol (default %d)\n"
 		"  -m, --modcod N         VL-SNR MODCOD 1-9 (default %d)\n"
 		"  -g, --gain DB          TX hardware gain (default %.1f)\n"
-		"  -a, --amplitude A      digital amplitude 0 < A <= 1\n",
+		"  -a, --amplitude A      digital amplitude 0 < A <= 1\n"
+		"  -R, --repeat           repeat the TS file continuously\n",
 		name, DEFAULT_URI, DEFAULT_SYMBOL_RATE, DEFAULT_SPS,
 		DEFAULT_MODCOD, DEFAULT_GAIN);
 }
@@ -89,6 +91,7 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 		{ "modcod", required_argument, NULL, 'm' },
 		{ "gain", required_argument, NULL, 'g' },
 		{ "amplitude", required_argument, NULL, 'a' },
+		{ "repeat", no_argument, NULL, 'R' },
 		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
@@ -101,7 +104,7 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 	options->modcod = DEFAULT_MODCOD;
 	options->gain = DEFAULT_GAIN;
 	options->scale = DEFAULT_SCALE;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:m:g:a:h",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:m:g:a:Rh",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -131,6 +134,9 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 			if (parse_double(optarg, &options->scale) < 0)
 				return -1;
 			break;
+		case 'R':
+			options->repeat = 1;
+			break;
 		case 'h':
 			usage(argv[0]);
 			exit(0);
@@ -146,6 +152,8 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 	    options->scale <= 0.0 || options->scale > 1.0)
 		return -1;
 	options->path = argv[optind];
+	if (options->repeat && !strcmp(options->path, "-"))
+		return -1;
 	return 0;
 }
 
@@ -200,6 +208,7 @@ int main(int argc, char **argv)
 	unsigned int frame_len = 0;
 	unsigned long long packet_count = 0;
 	unsigned long long frame_count = 0;
+	unsigned long long pass_packets = 0;
 	FILE *input = NULL;
 	int ret = 1;
 
@@ -236,7 +245,22 @@ int main(int argc, char **argv)
 		(double)options.symbol_rate / 1e6,
 		(double)config.sample_rate / 1e6,
 		options.modcod);
-	while (fread(packet, sizeof(packet), 1, input) == 1) {
+	for (;;) {
+		if (fread(packet, sizeof(packet), 1, input) != 1) {
+			if (ferror(input)) {
+				perror("TS input");
+				goto out;
+			}
+			if (!options.repeat)
+				break;
+			if (!pass_packets || fseek(input, 0, SEEK_SET) < 0) {
+				fprintf(stderr, "cannot repeat TS input\n");
+				goto out;
+			}
+			clearerr(input);
+			pass_packets = 0;
+			continue;
+		}
 		if (packet[0] != 0x47) {
 			fprintf(stderr, "invalid TS sync at packet %llu\n",
 				packet_count);
@@ -246,6 +270,7 @@ int main(int argc, char **argv)
 				      &frame_len) < 0)
 			goto out;
 		packet_count++;
+		pass_packets++;
 		if (!frame_len)
 			continue;
 		if (send_frame(&mod, &stream, bbframe, symbols, samples,
@@ -253,10 +278,6 @@ int main(int argc, char **argv)
 			goto out;
 		frame_count++;
 		report_progress(frame_count, config.sample_rate);
-	}
-	if (ferror(input)) {
-		perror("TS input");
-		goto out;
 	}
 	if (ts.data_len) {
 		make_null_packet(packet);
