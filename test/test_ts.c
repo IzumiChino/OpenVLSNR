@@ -19,18 +19,19 @@
 struct ts_vector {
 	unsigned int modcod;
 	uint32_t hash[TEST_FRAMES];
+	uint32_t pl_hash;
 };
 
 static const struct ts_vector vectors[] = {
-	{ 1, { 0xdc853528, 0xa9681463, 0x2732cb60 } },
-	{ 2, { 0x9a3b969a, 0x4c4d4d3f, 0xa6f1912e } },
-	{ 3, { 0xd6d26dd4, 0x53054abb, 0xaa1943e7 } },
-	{ 4, { 0x789e5c49, 0xf1dc9201, 0xe7024de3 } },
-	{ 5, { 0x02d28057, 0x3308448a, 0x8b26446d } },
-	{ 6, { 0xd88e1069, 0x09187800, 0x2a3e2f64 } },
-	{ 7, { 0x5a2daf0c, 0xf3d56488, 0x4d963277 } },
-	{ 8, { 0xbe22e5d5, 0xa0c82378, 0x940dd00c } },
-	{ 9, { 0x3718d97e, 0x8675425f, 0x4787dfb0 } },
+	{ 1, { 0xdc853528, 0xa9681463, 0x2732cb60 }, 0xb46fc9c1 },
+	{ 2, { 0x9a3b969a, 0x4c4d4d3f, 0xa6f1912e }, 0xb522e687 },
+	{ 3, { 0xd6d26dd4, 0x53054abb, 0xaa1943e7 }, 0x4ae762db },
+	{ 4, { 0x789e5c49, 0xf1dc9201, 0xe7024de3 }, 0x0dc1bf50 },
+	{ 5, { 0x02d28057, 0x3308448a, 0x8b26446d }, 0xa4555a33 },
+	{ 6, { 0xd88e1069, 0x09187800, 0x2a3e2f64 }, 0x01ced6fb },
+	{ 7, { 0x5a2daf0c, 0xf3d56488, 0x4d963277 }, 0x460978f2 },
+	{ 8, { 0xbe22e5d5, 0xa0c82378, 0x940dd00c }, 0xce4e5e14 },
+	{ 9, { 0x3718d97e, 0x8675425f, 0x4787dfb0 }, 0x34a7b600 },
 };
 
 static void make_packet(uint8_t *packet, unsigned int index)
@@ -52,6 +53,23 @@ static uint32_t hash_bits(const uint8_t *bits, unsigned int len)
 
 	for (i = 0; i < len; i++) {
 		hash ^= bits[i];
+		hash *= 16777619U;
+	}
+	return hash;
+}
+
+static uint32_t hash_symbols(const struct dvbs2x_complex *symbols,
+			     unsigned int len)
+{
+	uint32_t hash = 2166136261U;
+	unsigned int i;
+
+	for (i = 0; i < len; i++) {
+		uint8_t quadrant;
+
+		quadrant = (symbols[i].i < 0.0 ? 1 : 0) |
+			(symbols[i].q < 0.0 ? 2 : 0);
+		hash ^= quadrant;
 		hash *= 16777619U;
 	}
 	return hash;
@@ -104,6 +122,8 @@ static int test_vector(const struct ts_vector *vector)
 		if (dvbs2x_modulate_bbframe_symbols_ex(&mod, frame, symbols,
 						       DVBS2X_VLSNR_FRAME_LONG,
 						       &symbol_len) < 0 ||
+		    (frame_count == 0 &&
+		     hash_symbols(symbols, symbol_len) != vector->pl_hash) ||
 		    dvbs2x_demodulate_bbframe_symbols_ex(&demod, symbols,
 							 symbol_len, 0.001,
 							 decoded, mc->k_bch,
