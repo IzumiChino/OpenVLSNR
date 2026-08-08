@@ -13,6 +13,10 @@
 
 #include "dvbs2x_vlsnr.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 #define NUM_FRAMES	4
 
 struct stream_fixture {
@@ -209,6 +213,45 @@ out:
 	return ret;
 }
 
+static int test_carrier_lock(const struct stream_fixture *fix)
+{
+	const double frequency = 0.03 / 2.0;
+	struct dvbs2x_demodulator demod;
+	struct dvbs2x_complex *samples = NULL;
+	uint8_t *received = NULL;
+	unsigned int sample_len = fix->sample_len / NUM_FRAMES;
+	unsigned int received_len = 0;
+	unsigned int consumed = 0;
+	unsigned int i;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	samples = malloc(sample_len * sizeof(*samples));
+	received = calloc(fix->mc->k_bch, 1);
+	if (!samples || !received)
+		goto out;
+	for (i = 0; i < sample_len; i++) {
+		double angle = 2.0 * M_PI * frequency * (double)i + 0.71;
+		double c = cos(angle), s = sin(angle);
+
+		samples[i].i = fix->samples[i].i * c - fix->samples[i].q * s;
+		samples[i].q = fix->samples[i].i * s + fix->samples[i].q * c;
+	}
+	if (dvbs2x_demodulate_stream(&demod, samples, sample_len,
+				     received, &received_len, &consumed) < 0)
+		goto out;
+	if (consumed != sample_len ||
+	    check_frame(fix, received, received_len, 0) != 0)
+		goto out;
+	ret = 0;
+out:
+	free(samples);
+	free(received);
+	dvbs2x_demodulator_destroy(&demod);
+	return ret;
+}
+
 static int test_bbframe(const struct stream_fixture *fix)
 {
 	struct dvbs2x_bb_frame_ctx bb;
@@ -358,7 +401,8 @@ static int test_modcod(unsigned int modcod_idx)
 		goto out;
 	if (modcod_idx == 9 &&
 	    (test_clock_drift(&fix, 1.0001) < 0 ||
-	     test_clock_drift(&fix, 0.9999) < 0))
+	     test_clock_drift(&fix, 0.9999) < 0 ||
+	     test_carrier_lock(&fix) < 0))
 		goto out;
 	printf("    PASS\n");
 	ret = 0;

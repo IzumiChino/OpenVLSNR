@@ -64,6 +64,9 @@
 /* Limit oscillator drift without paying for transcendental calls per symbol. */
 #define DEROTATE_REANCHOR	256
 
+#define CARRIER_PLL_ALPHA	0.02
+#define CARRIER_PLL_BETA	1e-5
+
 /*
  * Frame-acquisition search window (symbols).  The demodulator expects
  * the frame to start within this many symbols of the buffer start, as
@@ -121,6 +124,84 @@ static void derotate(struct dvbs2x_complex *sym, unsigned int base,
 			c = cos(angle);
 			s = sin(angle);
 		}
+	}
+}
+
+static void fourth_power(const struct dvbs2x_complex *sample,
+			 double *real, double *imag)
+{
+	double magnitude;
+	double i, q, r2, i2;
+
+	magnitude = sqrt(sample->i * sample->i + sample->q * sample->q);
+	if (magnitude <= 1e-12) {
+		*real = 0.0;
+		*imag = 0.0;
+		return;
+	}
+	i = sample->i / magnitude;
+	q = sample->q / magnitude;
+	r2 = i * i - q * q;
+	i2 = 2.0 * i * q;
+	*real = r2 * r2 - i2 * i2;
+	*imag = 2.0 * r2 * i2;
+}
+
+/*
+ * Acquire and track carrier before frame synchronization.  Every DVB-S2X
+ * VL-SNR constellation point lies on a diagonal, so its fourth power removes
+ * both data and pi/2-BPSK rotation.  The differential estimate initializes a
+ * second-order Costas loop; the known header later resolves phase ambiguity.
+ */
+static void carrier_pll_lock(struct dvbs2x_complex *symbols,
+			     unsigned int len)
+{
+	double corr_i = 0.0, corr_q = 0.0;
+	double phase_i = 0.0, phase_q = 0.0;
+	double prev_i, prev_q;
+	double frequency, phase;
+	unsigned int n;
+
+	if (len < 2)
+		return;
+	fourth_power(&symbols[0], &prev_i, &prev_q);
+	for (n = 1; n < len; n++) {
+		double cur_i, cur_q;
+
+		fourth_power(&symbols[n], &cur_i, &cur_q);
+		corr_i += cur_i * prev_i + cur_q * prev_q;
+		corr_q += cur_q * prev_i - cur_i * prev_q;
+		prev_i = cur_i;
+		prev_q = cur_q;
+	}
+	frequency = atan2(corr_q, corr_i) / 4.0;
+	for (n = 0; n < len; n++) {
+		double cur_i, cur_q;
+		double angle = -4.0 * frequency * (double)n;
+		double c = cos(angle), s = sin(angle);
+
+		fourth_power(&symbols[n], &cur_i, &cur_q);
+		phase_i -= cur_i * c - cur_q * s;
+		phase_q -= cur_i * s + cur_q * c;
+	}
+	phase = atan2(phase_q, phase_i) / 4.0;
+	for (n = 0; n < len; n++) {
+		double c = cos(phase), s = sin(phase);
+		double cur_i, cur_q;
+		double error;
+
+		cur_i = symbols[n].i * c + symbols[n].q * s;
+		cur_q = symbols[n].q * c - symbols[n].i * s;
+		symbols[n].i = cur_i;
+		symbols[n].q = cur_q;
+		fourth_power(&symbols[n], &cur_i, &cur_q);
+		error = atan2(-cur_q, -cur_i) / 4.0;
+		frequency += CARRIER_PLL_BETA * error;
+		phase += frequency + CARRIER_PLL_ALPHA * error;
+		while (phase > M_PI)
+			phase -= 2.0 * M_PI;
+		while (phase < -M_PI)
+			phase += 2.0 * M_PI;
 	}
 }
 
@@ -484,6 +565,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	 */
 	if (demod->state != DVBS2X_DEMOD_SEARCH && demod->afc.freq_est != 0.0)
 		derotate(work, 0, in_len, demod->afc.freq_est, 0.0);
+	carrier_pll_lock(work, in_len);
 
 	/*
 	 * Frame sync via Walsh-Hadamard correlation, bounded to the
