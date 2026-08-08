@@ -89,6 +89,7 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 		{ "modcod", required_argument, NULL, 'm' },
 		{ "gain", required_argument, NULL, 'g' },
 		{ "amplitude", required_argument, NULL, 'a' },
+		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
 	int option;
@@ -100,7 +101,7 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 	options->modcod = DEFAULT_MODCOD;
 	options->gain = DEFAULT_GAIN;
 	options->scale = DEFAULT_SCALE;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:m:g:a:",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:m:g:a:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -130,6 +131,9 @@ static int parse_options(int argc, char **argv, struct tx_options *options)
 			if (parse_double(optarg, &options->scale) < 0)
 				return -1;
 			break;
+		case 'h':
+			usage(argv[0]);
+			exit(0);
 		default:
 			return -1;
 		}

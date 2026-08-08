@@ -91,6 +91,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 		{ "symbol-rate", required_argument, NULL, 'r' },
 		{ "sps", required_argument, NULL, 's' },
 		{ "gain", required_argument, NULL, 'g' },
+		{ "help", no_argument, NULL, 'h' },
 		{ NULL, 0, NULL, 0 },
 	};
 	int option;
@@ -100,7 +101,7 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 	options->symbol_rate = DEFAULT_SYMBOL_RATE;
 	options->sps = DEFAULT_SPS;
 	options->gain = DEFAULT_GAIN;
-	while ((option = getopt_long(argc, argv, "u:f:r:s:g:",
+	while ((option = getopt_long(argc, argv, "u:f:r:s:g:h",
 				      long_options, NULL)) != -1) {
 		switch (option) {
 		case 'u':
@@ -122,6 +123,9 @@ static int parse_options(int argc, char **argv, struct rx_options *options)
 			if (parse_double(optarg, &options->gain) < 0)
 				return -1;
 			break;
+		case 'h':
+			usage(argv[0]);
+			exit(0);
 		default:
 			return -1;
 		}
