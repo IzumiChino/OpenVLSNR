@@ -99,7 +99,6 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 	uint8_t *ldpc_info = NULL;
 	uint8_t *ldpc_cw = NULL;
 	uint8_t *tx_bits = NULL;
-	uint8_t *interleaved = NULL;
 	uint8_t *spread_bits = NULL;
 	struct dvbs2x_complex *tx_sym = NULL;
 	struct dvbs2x_vlsnr_layout lay = { 0, 0, 0, NULL };
@@ -126,9 +125,7 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 	ldpc_info = malloc(mc->k_ldpc);
 	ldpc_cw = malloc(mc->fec_len);
 	tx_bits = malloc(tx_coded);
-	interleaved = malloc(tx_coded);
-	if (!bbframe || !bch_out || !ldpc_info || !ldpc_cw || !tx_bits ||
-	    !interleaved)
+	if (!bbframe || !bch_out || !ldpc_info || !ldpc_cw || !tx_bits)
 		goto out;
 
 	/* Signal the configured roll-off in the BB header MATYPE-1 */
@@ -181,9 +178,6 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 		tx_bits[t_idx++] = ldpc_cw[mc->k_ldpc + i];
 	}
 
-	/* Interleave the transmitted bits */
-	dvbs2x_interleave(mc, tx_bits, interleaved);
-
 	/* Build the data-field layout (data/pilot positions) */
 	if (dvbs2x_vlsnr_build_layout(mc, &lay) < 0)
 		goto out;
@@ -198,21 +192,21 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
 		if (!tx_sym)
 			goto out;
-		dvbs2x_mod_qpsk(interleaved, tx_sym, num_tx_sym);
+		dvbs2x_mod_qpsk(tx_bits, tx_sym, num_tx_sym);
 	} else if (mc->has_spread) {
 		num_tx_sym = tx_coded * 2;
 		spread_bits = malloc(num_tx_sym);
 		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
 		if (!spread_bits || !tx_sym)
 			goto out;
-		dvbs2x_mod_spread_bits(interleaved, spread_bits, tx_coded);
+		dvbs2x_mod_spread_bits(tx_bits, spread_bits, tx_coded);
 		dvbs2x_mod_pi2bpsk(spread_bits, tx_sym, num_tx_sym);
 	} else {
 		num_tx_sym = tx_coded;
 		tx_sym = malloc(num_tx_sym * sizeof(struct dvbs2x_complex));
 		if (!tx_sym)
 			goto out;
-		dvbs2x_mod_pi2bpsk(interleaved, tx_sym, num_tx_sym);
+		dvbs2x_mod_pi2bpsk(tx_bits, tx_sym, num_tx_sym);
 	}
 
 	if (num_tx_sym != lay.num_data) {
@@ -251,7 +245,6 @@ out:
 	free(ldpc_info);
 	free(ldpc_cw);
 	free(tx_bits);
-	free(interleaved);
 	free(spread_bits);
 	free(tx_sym);
 	dvbs2x_vlsnr_free_layout(&lay);

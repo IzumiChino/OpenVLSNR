@@ -59,7 +59,6 @@ int dvbs2x_ldpc_encode(const struct dvbs2x_ldpc_encoder *enc,
 	unsigned int q = enc->code.q;
 	uint8_t *parity;
 	unsigned int group, j, a;
-	unsigned int addr;
 	unsigned int i;
 
 	/* Copy information bits to output (systematic) */
@@ -72,6 +71,7 @@ int dvbs2x_ldpc_encode(const struct dvbs2x_ldpc_encoder *enc,
 	/* Step 1: Accumulate based on address table */
 	for (group = 0; group < enc->code.num_groups; group++) {
 		const struct dvbs2x_ldpc_table_entry *entry;
+		unsigned int shift = 0;
 
 		entry = &enc->code.table[group];
 
@@ -80,14 +80,18 @@ int dvbs2x_ldpc_encode(const struct dvbs2x_ldpc_encoder *enc,
 
 			bit_idx = group * DVBS2X_LDPC_PARALLEL + j;
 
-			if (!info[bit_idx])
-				continue;
+			if (info[bit_idx]) {
+				/* XOR into parity positions. */
+				for (a = 0; a < entry->num_addrs; a++) {
+					unsigned int addr;
 
-			/* XOR into parity positions */
-			for (a = 0; a < entry->num_addrs; a++) {
-				addr = (entry->addrs[a] + j * q) % m;
-				parity[addr] ^= 1;
+					addr = entry->addrs[a] + shift;
+					if (addr >= m)
+						addr -= m;
+					parity[addr] ^= 1;
+				}
 			}
+			shift += q;
 		}
 	}
 

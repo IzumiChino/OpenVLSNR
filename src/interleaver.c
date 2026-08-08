@@ -17,11 +17,12 @@
  */
 
 #include "interleaver.h"
+#include <string.h>
 
 void dvbs2x_interleave(const struct dvbs2x_modcod *modcod,
 		       const uint8_t *input, uint8_t *output)
 {
-	unsigned int n, i;
+	unsigned int n;
 
 	n = dvbs2x_tx_coded_bits(modcod);
 
@@ -31,18 +32,16 @@ void dvbs2x_interleave(const struct dvbs2x_modcod *modcod,
 	 * (handled by the constellation mapper), so the bit stream is
 	 * unchanged here.
 	 */
-	for (i = 0; i < n; i++)
-		output[i] = input[i];
+	memcpy(output, input, n);
 }
 
 void dvbs2x_deinterleave(const struct dvbs2x_modcod *modcod,
 			 const double *input, double *output)
 {
-	unsigned int n, i;
+	unsigned int n;
 
 	n = dvbs2x_tx_coded_bits(modcod);
 
 	/* BPSK and QPSK: no deinterleaving (see dvbs2x_interleave). */
-	for (i = 0; i < n; i++)
-		output[i] = input[i];
+	memcpy(output, input, n * sizeof(*output));
 }
