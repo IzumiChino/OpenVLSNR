@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "dvbs2x_vlsnr.h"
 
@@ -132,6 +133,72 @@ static int test_scaled_frame(const struct stream_fixture *fix)
 				     received, &received_len, &consumed) < 0)
 		goto out;
 	if (consumed != frame_samples ||
+	    check_frame(fix, received, received_len, 0) != 0)
+		goto out;
+	ret = 0;
+out:
+	free(samples);
+	free(received);
+	dvbs2x_demodulator_destroy(&demod);
+	return ret;
+}
+
+static struct dvbs2x_complex interpolate_sample(
+	const struct dvbs2x_complex *samples, unsigned int len, double pos)
+{
+	struct dvbs2x_complex out;
+	long i = (long)floor(pos);
+	double f = pos - (double)i;
+	long a = i - 1, b = i, c = i + 1, d = i + 2;
+	double f2 = f * f, f3 = f2 * f;
+	double c0 = -0.5 * f3 + f2 - 0.5 * f;
+	double c1 = 1.5 * f3 - 2.5 * f2 + 1.0;
+	double c2 = -1.5 * f3 + 2.0 * f2 + 0.5 * f;
+	double c3 = 0.5 * f3 - 0.5 * f2;
+
+	if (a < 0)
+		a = 0;
+	if (b < 0)
+		b = 0;
+	if (c >= (long)len)
+		c = (long)len - 1;
+	if (d >= (long)len)
+		d = (long)len - 1;
+	out.i = c0 * samples[a].i + c1 * samples[b].i +
+		c2 * samples[c].i + c3 * samples[d].i;
+	out.q = c0 * samples[a].q + c1 * samples[b].q +
+		c2 * samples[c].q + c3 * samples[d].q;
+	return out;
+}
+
+static int test_clock_drift(const struct stream_fixture *fix, double ratio)
+{
+	struct dvbs2x_demodulator demod;
+	struct dvbs2x_complex *samples = NULL;
+	uint8_t *received = NULL;
+	unsigned int source_len = fix->sample_len / NUM_FRAMES;
+	unsigned int signal_len = (unsigned int)((double)source_len * ratio);
+	unsigned int sample_len = signal_len + 256;
+	unsigned int received_len = 0;
+	unsigned int consumed = 0;
+	unsigned int i;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	samples = malloc(sample_len * sizeof(*samples));
+	received = calloc(fix->mc->k_bch, 1);
+	if (!samples || !received)
+		goto out;
+	for (i = 0; i < signal_len; i++)
+		samples[i] = interpolate_sample(fix->samples, source_len,
+						(double)i / ratio);
+	memset(samples + signal_len, 0,
+	       (sample_len - signal_len) * sizeof(*samples));
+	if (dvbs2x_demodulate_stream(&demod, samples, sample_len,
+				     received, &received_len, &consumed) < 0)
+		goto out;
+	if (consumed != sample_len ||
 	    check_frame(fix, received, received_len, 0) != 0)
 		goto out;
 	ret = 0;
@@ -288,6 +355,10 @@ static int test_modcod(unsigned int modcod_idx)
 	    test_bbframe(&fix) < 0 ||
 	    test_large_buffer(&fix) < 0 ||
 	    test_arbitrary_chunks(&fix) < 0)
+		goto out;
+	if (modcod_idx == 9 &&
+	    (test_clock_drift(&fix, 1.0001) < 0 ||
+	     test_clock_drift(&fix, 0.9999) < 0))
 		goto out;
 	printf("    PASS\n");
 	ret = 0;
