@@ -61,6 +61,9 @@
  */
 #define SYNC_SEG_LEN	128
 
+/* Limit oscillator drift without paying for transcendental calls per symbol. */
+#define DEROTATE_REANCHOR	256
+
 /*
  * Frame-acquisition search window (symbols).  The demodulator expects
  * the frame to start within this many symbols of the buffer start, as
@@ -92,17 +95,32 @@ static int frame_geometry(const struct dvbs2x_modcod *mc,
 static void derotate(struct dvbs2x_complex *sym, unsigned int base,
 		     unsigned int span, double f, double phi)
 {
+	double step = 2.0 * M_PI * f;
+	double step_c = cos(step), step_s = sin(step);
+	double c = cos(phi), s = sin(phi);
 	unsigned int n;
 
 	for (n = 0; n < span; n++) {
 		struct dvbs2x_complex *r = &sym[base + n];
-		double a = 2.0 * M_PI * f * (double)n + phi;
-		double c = cos(a), s = sin(a);
 		double ti = r->i * c + r->q * s;
 		double tq = r->q * c - r->i * s;
+		double next_c, next_s;
 
 		r->i = ti;
 		r->q = tq;
+
+		next_c = c * step_c - s * step_s;
+		next_s = s * step_c + c * step_s;
+		c = next_c;
+		s = next_s;
+
+		/* Bound recurrence error on long normal frames. */
+		if ((n + 1) % DEROTATE_REANCHOR == 0) {
+			double angle = step * (double)(n + 1) + phi;
+
+			c = cos(angle);
+			s = sin(angle);
+		}
 	}
 }
 
@@ -321,17 +339,9 @@ static void residual_carrier_track(struct dvbs2x_complex *sym,
 		b = (swt - a * swp) / sw;
 	}
 
-	/* De-rotate the data field by the fitted phase line */
-	for (n = 0; n < lay->field_len; n++) {
-		struct dvbs2x_complex *r = &sym[data_start + n];
-		double angle = a * (double)(DVBS2X_VLSNR_WH_LEN + n) + b;
-		double c = cos(angle), s = sin(angle);
-		double ti = r->i * c + r->q * s;
-		double tq = r->q * c - r->i * s;
-
-		r->i = ti;
-		r->q = tq;
-	}
+	/* De-rotate the data field by the fitted phase line. */
+	derotate(sym, data_start, lay->field_len, a / (2.0 * M_PI),
+		 a * (double)DVBS2X_VLSNR_WH_LEN + b);
 }
 
 int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,

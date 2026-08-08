@@ -6,8 +6,28 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #include "dvbs2x_vlsnr.h"
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
+static void add_carrier_offset(struct dvbs2x_complex *symbols,
+			       unsigned int len, double freq, double phase)
+{
+	unsigned int i;
+
+	for (i = 0; i < len; i++) {
+		double angle = 2.0 * M_PI * freq * (double)i + phase;
+		double c = cos(angle), s = sin(angle);
+		double si = symbols[i].i, sq = symbols[i].q;
+
+		symbols[i].i = si * c - sq * s;
+		symbols[i].q = si * s + sq * c;
+	}
+}
 
 static int test_modcod(unsigned int index)
 {
@@ -34,8 +54,10 @@ static int test_modcod(unsigned int index)
 		input[i] = (i * 11 + index * 3) & 1;
 	if (dvbs2x_modulate_symbols_ex(&mod, input, payload_len, symbols,
 				       DVBS2X_VLSNR_FRAME_LONG,
-				       &symbol_len) < 0 ||
-	    dvbs2x_demodulate_symbols_ex(&demod, symbols, symbol_len, 0.001,
+				       &symbol_len) < 0)
+		goto out;
+	add_carrier_offset(symbols, symbol_len, 0.0002, 0.31);
+	if (dvbs2x_demodulate_symbols_ex(&demod, symbols, symbol_len, 0.001,
 					 output, payload_len, &output_len) < 0 ||
 	    output_len != payload_len ||
 	    memcmp(input, output, payload_len) != 0)
