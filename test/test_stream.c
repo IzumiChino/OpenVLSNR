@@ -484,7 +484,17 @@ static int test_offset_acquisition(const struct stream_fixture *fix)
 	received = calloc(fix->mc->k_bch, 1);
 	if (!samples || !received)
 		goto out;
-	memcpy(samples, fix->samples + frame_samples - prefix,
+	{
+		unsigned int received_len = 0, consumed = 0;
+
+		if (dvbs2x_demodulate_stream(&demod, fix->samples,
+					     frame_samples, received,
+					     &received_len, &consumed) < 0 ||
+		    consumed != frame_samples ||
+		    check_frame(fix, received, received_len, 0) != 0)
+			goto out;
+	}
+	memcpy(samples, fix->samples + 2 * frame_samples - prefix,
 	       sample_len * sizeof(*samples));
 	for (attempt = 0; attempt < 8; attempt++) {
 		const struct dvbs2x_complex *input = attempt ? NULL : samples;
@@ -499,7 +509,7 @@ static int test_offset_acquisition(const struct stream_fixture *fix)
 		if (dret == DVBS2X_ERR_NOSYNC)
 			continue;
 		if (dret < 0 ||
-		    check_frame(fix, received, received_len, 1) != 0)
+		    check_frame(fix, received, received_len, 2) != 0)
 			goto out;
 		ret = 0;
 		break;

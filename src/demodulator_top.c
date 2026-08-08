@@ -1116,7 +1116,7 @@ static int demodulate_stream_ex(struct dvbs2x_demodulator *demod,
 					  output, output_capacity, output_len);
 	free(decode_buf);
 
-	if (demod->modcod) {
+	if (demod->last_stats.modcod) {
 		unsigned int tx_sym, field_len;
 
 		if (frame_geometry(demod->modcod, &tx_sym, &field_len) == 0) {
