@@ -385,13 +385,13 @@ void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod)
 	demod->stream_cap = 0;
 }
 
-int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
-				 const struct dvbs2x_complex *input,
-				 unsigned int in_len,
-				 double noise_var,
-				 uint8_t *user_data,
-				 unsigned int user_capacity,
-				 unsigned int *user_len)
+int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
+					 const struct dvbs2x_complex *input,
+					 unsigned int in_len,
+					 double noise_var,
+					 uint8_t *bbframe,
+					 unsigned int frame_capacity,
+					 unsigned int *frame_len)
 {
 	const struct dvbs2x_modcod *mc;
 	struct dvbs2x_complex *work = NULL;
@@ -412,10 +412,10 @@ int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
 	double conf, demap_nv, nv_est, esn0_db;
 	int ret = DVBS2X_ERR_FEC;
 
-	if (!user_len)
+	if (!frame_len)
 		return DVBS2X_ERR_PARAM;
-	*user_len = 0;
-	if (!demod || !input || !user_data || noise_var < 0.0)
+	*frame_len = 0;
+	if (!demod || !input || !bbframe || noise_var < 0.0)
 		return DVBS2X_ERR_PARAM;
 
 	if (in_len < DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN)
@@ -680,12 +680,13 @@ int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
 		}
 	}
 
-	/* BB frame parse */
-	dvbs2x_bb_frame_init(&demod->bb_ctx, mc, DVBS2X_STREAM_GS);
-	ret = dvbs2x_bb_frame_parse_ex(&demod->bb_ctx, bch_cw,
-				       user_data, user_capacity, user_len);
-	if (ret < 0 && ret != DVBS2X_ERR_SHORT)
-		ret = DVBS2X_ERR_CRC;
+	*frame_len = mc->k_bch;
+	if (frame_capacity < *frame_len) {
+		ret = DVBS2X_ERR_SHORT;
+		goto out;
+	}
+	memcpy(bbframe, bch_cw, *frame_len);
+	ret = 0;
 
 out:
 	free(work);
@@ -698,6 +699,47 @@ out:
 	free(ldpc_out);
 	free(bch_cw);
 	dvbs2x_vlsnr_free_layout(&lay);
+	return ret;
+}
+
+int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
+				 const struct dvbs2x_complex *input,
+				 unsigned int in_len,
+				 double noise_var,
+				 uint8_t *user_data,
+				 unsigned int user_capacity,
+				 unsigned int *user_len)
+{
+	uint8_t *bbframe;
+	unsigned int frame_len = 0;
+	int ret;
+
+	if (!user_len)
+		return DVBS2X_ERR_PARAM;
+	*user_len = 0;
+	if (!demod || !input || !user_data || noise_var < 0.0)
+		return DVBS2X_ERR_PARAM;
+	bbframe = malloc(DVBS2X_LDPC_NORMAL);
+	if (!bbframe)
+		return DVBS2X_ERR_NOMEM;
+	ret = dvbs2x_demodulate_bbframe_symbols_ex(demod, input, in_len,
+						   noise_var, bbframe,
+						   DVBS2X_LDPC_NORMAL,
+						   &frame_len);
+	if (ret < 0)
+		goto out;
+	if (!demod->modcod || frame_len != demod->modcod->k_bch) {
+		ret = DVBS2X_ERR_PARAM;
+		goto out;
+	}
+	dvbs2x_bb_frame_init(&demod->bb_ctx, demod->modcod,
+				 DVBS2X_STREAM_GS);
+	ret = dvbs2x_bb_frame_parse_ex(&demod->bb_ctx, bbframe,
+				       user_data, user_capacity, user_len);
+	if (ret < 0 && ret != DVBS2X_ERR_SHORT)
+		ret = DVBS2X_ERR_CRC;
+out:
+	free(bbframe);
 	return ret;
 }
 

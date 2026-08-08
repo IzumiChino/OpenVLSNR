@@ -86,15 +86,13 @@ void dvbs2x_modulator_destroy(struct dvbs2x_modulator *mod)
  * Build the PL frame at symbol rate (no pulse shaping).
  * Returns 0 on success; *sym_len receives the number of symbols.
  */
-int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
-			       const uint8_t *user_data,
-			       unsigned int user_len,
-			       struct dvbs2x_complex *symbols,
-			       unsigned int symbol_capacity,
-			       unsigned int *sym_len)
+int dvbs2x_modulate_bbframe_symbols_ex(struct dvbs2x_modulator *mod,
+				       const uint8_t *bbframe,
+				       struct dvbs2x_complex *symbols,
+				       unsigned int symbol_capacity,
+				       unsigned int *sym_len)
 {
 	const struct dvbs2x_modcod *mc;
-	uint8_t *bbframe = NULL;
 	uint8_t *bch_out = NULL;
 	uint8_t *ldpc_info = NULL;
 	uint8_t *ldpc_cw = NULL;
@@ -111,32 +109,21 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 	if (!sym_len)
 		return DVBS2X_ERR_PARAM;
 	*sym_len = 0;
-	if (!mod || !mod->cfg.modcod || !user_data || !symbols)
+	if (!mod || !mod->cfg.modcod || !bbframe || !symbols)
 		return DVBS2X_ERR_PARAM;
 	mc = mod->cfg.modcod;
-	if (user_len > mod->bb_ctx.dfl)
-		return DVBS2X_ERR_PARAM;
 
 	hdr_len = DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_HDR_LEN;
 	tx_coded = dvbs2x_tx_coded_bits(mc);
 
-	bbframe = malloc(mc->k_bch);
 	bch_out = malloc(mc->n_bch);
 	ldpc_info = malloc(mc->k_ldpc);
 	ldpc_cw = malloc(mc->fec_len);
 	tx_bits = malloc(tx_coded);
-	if (!bbframe || !bch_out || !ldpc_info || !ldpc_cw || !tx_bits)
+	if (!bch_out || !ldpc_info || !ldpc_cw || !tx_bits)
 		goto out;
 
-	/* Signal the configured roll-off in the BB header MATYPE-1 */
-	mod->bb_ctx.ro = dvbs2x_ro_from_rolloff(mod->cfg.rolloff);
-
-	/* BB frame -> BCH -> LDPC */
-	if (dvbs2x_bb_frame_build(&mod->bb_ctx, user_data, user_len,
-				  bbframe) < 0) {
-		ret = DVBS2X_ERR_PARAM;
-		goto out;
-	}
+	/* BCH -> LDPC */
 	if (dvbs2x_bch_encode(&mod->bch_enc, bbframe, bch_out) < 0) {
 		ret = DVBS2X_ERR_PARAM;
 		goto out;
@@ -240,7 +227,6 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 	ret = DVBS2X_OK;
 
 out:
-	free(bbframe);
 	free(bch_out);
 	free(ldpc_info);
 	free(ldpc_cw);
@@ -248,6 +234,38 @@ out:
 	free(spread_bits);
 	free(tx_sym);
 	dvbs2x_vlsnr_free_layout(&lay);
+	return ret;
+}
+
+int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
+			       const uint8_t *user_data,
+			       unsigned int user_len,
+			       struct dvbs2x_complex *symbols,
+			       unsigned int symbol_capacity,
+			       unsigned int *sym_len)
+{
+	uint8_t *bbframe;
+	int ret;
+
+	if (!sym_len)
+		return DVBS2X_ERR_PARAM;
+	*sym_len = 0;
+	if (!mod || !mod->cfg.modcod || !user_data || !symbols ||
+	    user_len > mod->bb_ctx.dfl)
+		return DVBS2X_ERR_PARAM;
+	bbframe = malloc(mod->cfg.modcod->k_bch);
+	if (!bbframe)
+		return DVBS2X_ERR_NOMEM;
+
+	mod->bb_ctx.ro = dvbs2x_ro_from_rolloff(mod->cfg.rolloff);
+	ret = dvbs2x_bb_frame_build(&mod->bb_ctx, user_data, user_len,
+				    bbframe);
+	if (ret < 0)
+		goto out;
+	ret = dvbs2x_modulate_bbframe_symbols_ex(mod, bbframe, symbols,
+						 symbol_capacity, sym_len);
+out:
+	free(bbframe);
 	return ret;
 }
 

@@ -54,12 +54,17 @@ static uint32_t hash_bits(const uint8_t *bits, unsigned int len)
 static int test_vector(const struct ts_vector *vector)
 {
 	const struct dvbs2x_modcod *mc;
+	struct dvbs2x_modulator mod = { 0 };
+	struct dvbs2x_demodulator demod = { 0 };
 	struct dvbs2x_ts_tx tx = { 0 };
 	struct dvbs2x_ts_rx rx;
 	uint8_t source[TEST_PACKETS][DVBS2X_TS_PACKET_SIZE];
 	uint8_t output[16 * DVBS2X_TS_PACKET_SIZE];
 	uint8_t *frame = NULL;
+	uint8_t *decoded = NULL;
+	struct dvbs2x_complex *symbols = NULL;
 	unsigned int frame_len, frame_count = 0, output_count = 0;
+	unsigned int decoded_len, symbol_len;
 	unsigned int recovered = 0, packet_index;
 	int ret = -1;
 
@@ -67,13 +72,17 @@ static int test_vector(const struct ts_vector *vector)
 	if (!mc)
 		return -1;
 	frame = malloc(mc->k_bch);
-	if (!frame)
-		return -1;
+	decoded = malloc(mc->k_bch);
+	symbols = malloc(DVBS2X_VLSNR_FRAME_LONG * sizeof(*symbols));
+	if (!frame || !decoded || !symbols)
+		goto out;
 	for (packet_index = 0; packet_index < TEST_PACKETS;
 	     packet_index++)
 		make_packet(source[packet_index], packet_index);
 	if (dvbs2x_ts_tx_init(&tx, mc, DVBS2X_RO_0_35) < 0 ||
-	    dvbs2x_ts_rx_init(&rx, mc) < 0)
+	    dvbs2x_ts_rx_init(&rx, mc) < 0 ||
+	    dvbs2x_modulator_init(&mod, vector->modcod, 0.35, 2, 0) < 0 ||
+	    dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
 		goto out;
 
 	for (packet_index = 0; packet_index < TEST_PACKETS &&
@@ -86,7 +95,17 @@ static int test_vector(const struct ts_vector *vector)
 		if (hash_bits(frame, frame_len) !=
 		    vector->hash[frame_count])
 			goto out;
-		if (dvbs2x_ts_rx_push(&rx, frame, output, 16,
+		if (dvbs2x_modulate_bbframe_symbols_ex(&mod, frame, symbols,
+						       DVBS2X_VLSNR_FRAME_LONG,
+						       &symbol_len) < 0 ||
+		    dvbs2x_demodulate_bbframe_symbols_ex(&demod, symbols,
+							 symbol_len, 0.001,
+							 decoded, mc->k_bch,
+							 &decoded_len) < 0 ||
+		    decoded_len != frame_len ||
+		    memcmp(decoded, frame, frame_len) != 0)
+			goto out;
+		if (dvbs2x_ts_rx_push(&rx, decoded, output, 16,
 				      &output_count) < 0)
 			goto out;
 		if (memcmp(output, source[recovered],
@@ -100,7 +119,11 @@ static int test_vector(const struct ts_vector *vector)
 	ret = 0;
 out:
 	dvbs2x_ts_tx_destroy(&tx);
+	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_modulator_destroy(&mod);
 	free(frame);
+	free(decoded);
+	free(symbols);
 	return ret;
 }
 

@@ -170,6 +170,13 @@ int dvbs2x_modulate_symbols_ex(struct dvbs2x_modulator *mod,
 			       unsigned int symbol_capacity,
 			       unsigned int *sym_len);
 
+/* Modulate an already mode-adapted and BB-scrambled k_bch-bit BBFRAME. */
+int dvbs2x_modulate_bbframe_symbols_ex(struct dvbs2x_modulator *mod,
+				       const uint8_t *bbframe,
+				       struct dvbs2x_complex *symbols,
+				       unsigned int symbol_capacity,
+				       unsigned int *sym_len);
+
 /*
  * dvbs2x_demodulator_init - Initialize demodulator
  * @demod: demodulator context
@@ -183,6 +190,15 @@ int dvbs2x_demodulator_init(struct dvbs2x_demodulator *demod,
 			    double rolloff,
 			    unsigned int sps,
 			    unsigned int pl_scrambling_idx);
+
+/* Recover the mode-adapted, BB-scrambled k_bch-bit BBFRAME. */
+int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
+					 const struct dvbs2x_complex *input,
+					 unsigned int in_len,
+					 double noise_var,
+					 uint8_t *bbframe,
+					 unsigned int frame_capacity,
+					 unsigned int *frame_len);
 
 /*
  * dvbs2x_demodulator_destroy - Release demodulator resources
