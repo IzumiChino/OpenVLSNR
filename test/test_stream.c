@@ -28,6 +28,8 @@ struct stream_fixture {
 	unsigned int payload_len;
 };
 
+static int test_offset_acquisition(const struct stream_fixture *fix);
+
 static void fixture_destroy(struct stream_fixture *fix)
 {
 	free(fix->samples);
@@ -252,6 +254,58 @@ out:
 	return ret;
 }
 
+static int test_continuous_lock(const struct stream_fixture *fix)
+{
+	const double ratio = 1.0001;
+	const double frequency = 0.01 / 2.0;
+	struct dvbs2x_demodulator demod;
+	struct dvbs2x_complex *samples = NULL;
+	uint8_t *received = NULL;
+	unsigned int sample_len;
+	unsigned int source_len = fix->sample_len;
+	unsigned int frame = 0;
+	unsigned int i;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	sample_len = (unsigned int)((double)source_len * ratio) + 256;
+	samples = malloc(sample_len * sizeof(*samples));
+	received = calloc(fix->mc->k_bch, 1);
+	if (!samples || !received)
+		goto out;
+	for (i = 0; i + 256 < sample_len; i++) {
+		struct dvbs2x_complex value;
+		double angle = 2.0 * M_PI * frequency * (double)i + 0.37;
+		double c = cos(angle), s = sin(angle);
+
+		value = interpolate_sample(fix->samples, source_len,
+					   (double)i / ratio);
+		samples[i].i = value.i * c - value.q * s;
+		samples[i].q = value.i * s + value.q * c;
+	}
+	while (frame < NUM_FRAMES) {
+		const struct dvbs2x_complex *input = frame ? NULL : samples;
+		unsigned int input_len = frame ? 0 : sample_len;
+		unsigned int received_len = 0, consumed = 0;
+
+		if (dvbs2x_demodulate_stream(&demod, input, input_len,
+					     received, &received_len,
+					     &consumed) < 0)
+			goto out;
+		if (consumed != input_len ||
+		    check_frame(fix, received, received_len, frame) != 0)
+			goto out;
+		frame++;
+	}
+	ret = 0;
+out:
+	free(samples);
+	free(received);
+	dvbs2x_demodulator_destroy(&demod);
+	return ret;
+}
+
 static int test_bbframe(const struct stream_fixture *fix)
 {
 	struct dvbs2x_bb_frame_ctx bb;
@@ -397,17 +451,63 @@ static int test_modcod(unsigned int modcod_idx)
 	if (test_one_frame(&fix) < 0 || test_scaled_frame(&fix) < 0 ||
 	    test_bbframe(&fix) < 0 ||
 	    test_large_buffer(&fix) < 0 ||
-	    test_arbitrary_chunks(&fix) < 0)
+	    test_arbitrary_chunks(&fix) < 0 ||
+	    test_offset_acquisition(&fix) < 0)
 		goto out;
 	if (modcod_idx == 9 &&
 	    (test_clock_drift(&fix, 1.0001) < 0 ||
 	     test_clock_drift(&fix, 0.9999) < 0 ||
-	     test_carrier_lock(&fix) < 0))
+	     test_carrier_lock(&fix) < 0 ||
+	     test_continuous_lock(&fix) < 0))
 		goto out;
 	printf("    PASS\n");
 	ret = 0;
 out:
 	fixture_destroy(&fix);
+	return ret;
+}
+
+static int test_offset_acquisition(const struct stream_fixture *fix)
+{
+	const unsigned int prefix = 12000;
+	struct dvbs2x_demodulator demod;
+	struct dvbs2x_complex *samples = NULL;
+	uint8_t *received = NULL;
+	unsigned int frame_samples = fix->sample_len / NUM_FRAMES;
+	unsigned int sample_len = prefix + frame_samples;
+	unsigned int attempt;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	samples = calloc(sample_len, sizeof(*samples));
+	received = calloc(fix->mc->k_bch, 1);
+	if (!samples || !received)
+		goto out;
+	memcpy(samples, fix->samples + frame_samples - prefix,
+	       sample_len * sizeof(*samples));
+	for (attempt = 0; attempt < 8; attempt++) {
+		const struct dvbs2x_complex *input = attempt ? NULL : samples;
+		unsigned int input_len = attempt ? 0 : sample_len;
+		unsigned int received_len = 0, consumed = 0;
+		int dret;
+
+		dret = dvbs2x_demodulate_stream(&demod, input, input_len,
+					       received, &received_len, &consumed);
+		if (consumed != input_len)
+			goto out;
+		if (dret == DVBS2X_ERR_NOSYNC)
+			continue;
+		if (dret < 0 ||
+		    check_frame(fix, received, received_len, 1) != 0)
+			goto out;
+		ret = 0;
+		break;
+	}
+out:
+	free(samples);
+	free(received);
+	dvbs2x_demodulator_destroy(&demod);
 	return ret;
 }
 
@@ -431,9 +531,17 @@ static int test_search_progress(void)
 				     received, &received_len, &consumed) !=
 	    DVBS2X_ERR_NOSYNC || consumed != sample_len)
 		goto out;
-	if (dvbs2x_demodulate_stream(&demod, NULL, 0, received,
-				     &received_len, &consumed) !=
-	    DVBS2X_ERR_SHORT)
+	for (sample_len = 0; sample_len < 8; sample_len++) {
+		int dret;
+
+		dret = dvbs2x_demodulate_stream(&demod, NULL, 0, received,
+					       &received_len, &consumed);
+		if (dret == DVBS2X_ERR_SHORT)
+			break;
+		if (dret != DVBS2X_ERR_NOSYNC)
+			goto out;
+	}
+	if (sample_len == 8)
 		goto out;
 	ret = 0;
 out:

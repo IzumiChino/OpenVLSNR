@@ -1135,18 +1135,17 @@ static int demodulate_stream_ex(struct dvbs2x_demodulator *demod,
 
 	/*
 	 * Remove exactly one decoded or identified frame.  A failed search has
-	 * examined the complete acquisition window, so retain only enough of
-	 * that window for a header which crosses the next chunk boundary.
+	 * examined only ACQ_WINDOW symbols.  Advance through the portion which
+	 * cannot begin a header and retain the overlap for the next search.
 	 */
 	if (!frame_samples || frame_samples > demod->stream_len) {
-		unsigned int retain;
+		unsigned int searched;
 
-		retain = (DVBS2X_VLSNR_WH_LEN + demod->rx_filter.num_taps) *
+		searched = (ACQ_WINDOW - DVBS2X_VLSNR_WH_LEN) *
 			demod->timing.sps;
-		if (demod->stream_len > retain)
-			frame_samples = demod->stream_len - retain;
-		else
-			frame_samples = 1;
+		if (searched > demod->stream_len)
+			searched = demod->stream_len;
+		frame_samples = searched ? searched : 1;
 	}
 	demod->stream_len -= frame_samples;
 	memmove(demod->stream_buf, demod->stream_buf + frame_samples,
