@@ -175,6 +175,16 @@ static int send_frame(struct dvbs2x_modulator *mod,
 	return pluto_tx_write(stream, samples, sample_len, scale);
 }
 
+static void report_progress(unsigned long long frame_count,
+			    long long sample_rate)
+{
+	if (frame_count == 1)
+		fprintf(stderr, "streaming started at %.3f MS/s\n",
+			(double)sample_rate / 1e6);
+	else if (!(frame_count % 100))
+		fprintf(stderr, "sent %llu PL frames\r", frame_count);
+}
+
 int main(int argc, char **argv)
 {
 	struct tx_options options;
@@ -221,9 +231,10 @@ int main(int argc, char **argv)
 	config.gain = options.gain;
 	if (pluto_tx_open(&stream, &config, PLUTO_BUFFER_SAMPLES) < 0)
 		goto out;
-	fprintf(stderr, "TX %.3f MHz, %.3f Msym/s, %lld MS/s, MODCOD %u\n",
+	fprintf(stderr, "TX %.3f MHz, %.3f Msym/s, %.3f MS/s, MODCOD %u\n",
 		(double)options.frequency / 1e6,
-		(double)options.symbol_rate / 1e6, config.sample_rate / 1000000,
+		(double)options.symbol_rate / 1e6,
+		(double)config.sample_rate / 1e6,
 		options.modcod);
 	while (fread(packet, sizeof(packet), 1, input) == 1) {
 		if (packet[0] != 0x47) {
@@ -241,6 +252,7 @@ int main(int argc, char **argv)
 			       options.scale) < 0)
 			goto out;
 		frame_count++;
+		report_progress(frame_count, config.sample_rate);
 	}
 	if (ferror(input)) {
 		perror("TS input");
@@ -257,8 +269,9 @@ int main(int argc, char **argv)
 			       options.scale) < 0)
 			goto out;
 		frame_count++;
+		report_progress(frame_count, config.sample_rate);
 	}
-	fprintf(stderr, "sent %llu TS packets in %llu PL frames\n",
+	fprintf(stderr, "\nsent %llu TS packets in %llu PL frames\n",
 		packet_count, frame_count);
 	ret = 0;
 out:

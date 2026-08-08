@@ -210,9 +210,10 @@ int main(int argc, char **argv)
 	if (signal(SIGINT, stop_handler) == SIG_ERR ||
 	    signal(SIGTERM, stop_handler) == SIG_ERR)
 		goto out;
-	fprintf(stderr, "RX %.3f MHz, %.3f Msym/s, %lld MS/s\n",
+	fprintf(stderr, "RX %.3f MHz, %.3f Msym/s, %.3f MS/s\n",
 		(double)options.frequency / 1e6,
-		(double)options.symbol_rate / 1e6, config.sample_rate / 1000000);
+		(double)options.symbol_rate / 1e6,
+		(double)config.sample_rate / 1e6);
 	while (!stop_requested) {
 		unsigned int sample_len;
 		unsigned int consumed;
