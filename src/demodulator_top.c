@@ -552,8 +552,10 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 			DVBS2X_VLSNR_WH_LEN;
 		if (search_len > in_len - search_base)
 			search_len = in_len - search_base;
-		conf = dvbs2x_vlsnr_header_sync(work + search_base,
-			search_len, SYNC_SEG_LEN, &wh_start, &modcod_idx);
+		conf = dvbs2x_vlsnr_header_sync_mode(work + search_base,
+			search_len, SYNC_SEG_LEN,
+			demod->modcod ? demod->modcod->index : 0,
+			&wh_start, &modcod_idx);
 		wh_start += search_base;
 	} else {
 		conf = -1.0;

@@ -137,10 +137,13 @@ static inline void filter_one(struct dvbs2x_rrc_filter *flt,
 	di = &flt->delay_i[idx + 1];
 	dq = &flt->delay_q[idx + 1];
 
-	for (k = 0; k < nt; k++) {
-		si += di[nt - 1 - k] * c[k];
-		sq += dq[nt - 1 - k] * c[k];
+	/* RRC taps are symmetric, so each multiply covers a sample pair. */
+	for (k = 0; k < nt / 2; k++) {
+		si += (di[nt - 1 - k] + di[k]) * c[k];
+		sq += (dq[nt - 1 - k] + dq[k]) * c[k];
 	}
+	si += di[nt / 2] * c[nt / 2];
+	sq += dq[nt / 2] * c[nt / 2];
 
 	*out_i = si;
 	*out_q = sq;

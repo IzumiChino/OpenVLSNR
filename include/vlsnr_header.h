@@ -49,6 +49,14 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 				unsigned int *offset,
 				unsigned int *modcod_idx);
 
+/* Restrict a tracking search to one already acquired MODCOD. */
+double dvbs2x_vlsnr_header_sync_mode(const struct dvbs2x_complex *symbols,
+				     unsigned int len,
+				     unsigned int seg_len,
+				     unsigned int preferred_modcod,
+				     unsigned int *offset,
+				     unsigned int *modcod_idx);
+
 /*
  * dvbs2x_wh_generate - Generate VL-SNR WH chip sequence
  * @index: Annex-I index (0-15)

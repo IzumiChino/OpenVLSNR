@@ -299,11 +299,12 @@ static const struct dvbs2x_complex *sync_fft_reference(unsigned int fft_len,
 	}
 }
 
-double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
-				unsigned int len,
-				unsigned int seg_len,
-				unsigned int *offset,
-				unsigned int *modcod_idx)
+double dvbs2x_vlsnr_header_sync_mode(const struct dvbs2x_complex *symbols,
+				     unsigned int len,
+				     unsigned int seg_len,
+				     unsigned int preferred_modcod,
+				     unsigned int *offset,
+				     unsigned int *modcod_idx)
 {
 	struct dvbs2x_complex *input_fft = NULL;
 	struct dvbs2x_complex *work = NULL;
@@ -315,10 +316,17 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 	unsigned int best_offset = 0;
 	unsigned int best_modcod = 1;
 	unsigned int fft_len, positions;
-	unsigned int mc, pos, n;
+	unsigned int mc, mc_first = 0, mc_last = DVBS2X_VLSNR_NUM_MODCODS;
+	unsigned int pos, n;
 
 	if (seg_len == 0 || seg_len > DVBS2X_VLSNR_WH_LEN)
 		seg_len = DVBS2X_VLSNR_WH_LEN;
+	if (preferred_modcod >= 1 &&
+	    preferred_modcod <= DVBS2X_VLSNR_NUM_MODCODS) {
+		mc_first = preferred_modcod - 1;
+		mc_last = preferred_modcod;
+		best_modcod = preferred_modcod;
+	}
 
 	/* Ensure references are initialized (lazy fallback) */
 	if (!vlsnr_ref_init)
@@ -357,7 +365,7 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 			 symbols[pos + DVBS2X_VLSNR_WH_LEN - 1].q *
 			 symbols[pos + DVBS2X_VLSNR_WH_LEN - 1].q);
 	}
-	for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+	for (mc = mc_first; mc < mc_last; mc++) {
 		const struct dvbs2x_complex *reference_fft;
 
 		reference_fft = sync_fft_reference(fft_len, mc);
@@ -395,7 +403,7 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 			}
 		}
 	}
-	for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
+	for (mc = mc_first; mc < mc_last; mc++) {
 		const struct dvbs2x_complex *rf = vlsnr_ref[mc];
 		double seg_mag = 0.0, norm;
 		unsigned int seg_start;
@@ -437,4 +445,14 @@ done:
 	if (modcod_idx)
 		*modcod_idx = best_modcod;
 	return best_corr;
+}
+
+double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
+				unsigned int len,
+				unsigned int seg_len,
+				unsigned int *offset,
+				unsigned int *modcod_idx)
+{
+	return dvbs2x_vlsnr_header_sync_mode(symbols, len, seg_len, 0,
+					      offset, modcod_idx);
 }
