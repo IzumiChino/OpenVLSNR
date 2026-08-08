@@ -56,6 +56,7 @@ FAST_TESTS	= $(TESTDIR)/test_api \
 		  $(TESTDIR)/test_loopback \
 		  $(TESTDIR)/test_modulator \
 		  $(TESTDIR)/test_stream \
+		  $(TESTDIR)/test_ts \
 		  $(TESTDIR)/test_vectors
 SLOW_TESTS	= $(TESTDIR)/test_api_loopback \
 		  $(TESTDIR)/test_ber \

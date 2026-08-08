@@ -19,8 +19,11 @@
 #define DVBS2X_BB_PRBS_POLY	0x6000
 
 /* Stream types */
-#define DVBS2X_STREAM_TS	0	/* TS adaptation is not implemented */
+#define DVBS2X_STREAM_TS	0	/* MPEG transport stream */
 #define DVBS2X_STREAM_GS	1	/* Generic continuous bit stream */
+
+#define DVBS2X_TS_PACKET_SIZE	188
+#define DVBS2X_TS_PACKET_BITS	(DVBS2X_TS_PACKET_SIZE * 8)
 
 /* MATYPE-1 roll-off field (bits 1:0) per ETSI EN 302 307-1 Table 2 */
 #define DVBS2X_RO_0_35	0
@@ -36,6 +39,24 @@ struct dvbs2x_bb_frame_ctx {
 	uint8_t		ro;		/* MATYPE-1 roll-off code (TX) */
 };
 
+/* Stateful MPEG-TS mode-adaptation transmitter. */
+struct dvbs2x_ts_tx {
+	struct dvbs2x_bb_frame_ctx bb;
+	uint8_t		*data_bits;
+	unsigned int	data_len;
+	uint16_t	syncd;
+	uint8_t		previous_crc;
+};
+
+/* Stateful MPEG-TS mode-adaptation receiver. */
+struct dvbs2x_ts_rx {
+	struct dvbs2x_bb_frame_ctx bb;
+	uint8_t		packet[DVBS2X_TS_PACKET_SIZE];
+	uint8_t		previous[DVBS2X_TS_PACKET_SIZE];
+	unsigned int	packet_bits;
+	int		have_previous;
+};
+
 /*
  * dvbs2x_ro_from_rolloff - Map a roll-off factor to its MATYPE-1 RO code
  */
@@ -45,7 +66,9 @@ uint8_t dvbs2x_ro_from_rolloff(double rolloff);
  * dvbs2x_bb_frame_init - Initialize BB frame context
  * @ctx: BB frame context
  * @modcod: MODCOD parameters
- * @stream_type: DVBS2X_STREAM_GS; TS mode is reserved and rejected
+ * @stream_type: stream type recorded in the context
+ *
+ * Use dvbs2x_ts_tx_init() for raw MPEG-TS packet mode adaptation.
  */
 void dvbs2x_bb_frame_init(struct dvbs2x_bb_frame_ctx *ctx,
 			  const struct dvbs2x_modcod *modcod,
@@ -97,5 +120,31 @@ int dvbs2x_bb_frame_parse_ex(const struct dvbs2x_bb_frame_ctx *ctx,
  * Polynomial: x^8 + x^7 + x^6 + x^4 + x^2 + 1 (0xD5)
  */
 uint8_t dvbs2x_bb_crc8(const uint8_t *data, unsigned int len);
+
+/* Initialize and release a continuous MPEG-TS transmitter. */
+int dvbs2x_ts_tx_init(struct dvbs2x_ts_tx *tx,
+		      const struct dvbs2x_modcod *modcod, uint8_t ro);
+void dvbs2x_ts_tx_destroy(struct dvbs2x_ts_tx *tx);
+
+/*
+ * Consume one complete TS packet and emit at most one BBFRAME.  frame_len
+ * is zero until enough packet bits have filled a data field.
+ */
+int dvbs2x_ts_tx_push(struct dvbs2x_ts_tx *tx, const uint8_t *packet,
+		      uint8_t *bbframe, unsigned int frame_capacity,
+		      unsigned int *frame_len);
+
+/* Initialize or reset a continuous MPEG-TS receiver. */
+int dvbs2x_ts_rx_init(struct dvbs2x_ts_rx *rx,
+		      const struct dvbs2x_modcod *modcod);
+void dvbs2x_ts_rx_reset(struct dvbs2x_ts_rx *rx);
+
+/*
+ * Consume one BBFRAME and emit CRC-verified TS packets.  packet_capacity
+ * and packet_count are measured in complete 188-byte packets.
+ */
+int dvbs2x_ts_rx_push(struct dvbs2x_ts_rx *rx, const uint8_t *bbframe,
+		      uint8_t *packets, unsigned int packet_capacity,
+		      unsigned int *packet_count);
 
 #endif /* DVBS2X_BB_FRAME_H */
