@@ -107,6 +107,41 @@ out:
 	return ret;
 }
 
+static int test_bbframe(const struct stream_fixture *fix)
+{
+	struct dvbs2x_bb_frame_ctx bb;
+	struct dvbs2x_demodulator demod;
+	uint8_t *expected = NULL;
+	uint8_t *received = NULL;
+	unsigned int frame_samples = fix->sample_len / NUM_FRAMES;
+	unsigned int received_len = 0, consumed = 0;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	expected = calloc(fix->mc->k_bch, 1);
+	received = calloc(fix->mc->k_bch, 1);
+	if (!expected || !received)
+		goto out;
+	dvbs2x_bb_frame_init(&bb, fix->mc, DVBS2X_STREAM_GS);
+	if (dvbs2x_bb_frame_build(&bb, fix->payloads, fix->payload_len,
+				  expected) < 0)
+		goto out;
+	if (dvbs2x_demodulate_bbframe_stream_ex(
+		    &demod, fix->samples, frame_samples, received,
+		    fix->mc->k_bch, &received_len, &consumed) < 0)
+		goto out;
+	if (consumed != frame_samples || received_len != fix->mc->k_bch ||
+	    memcmp(received, expected, received_len) != 0)
+		goto out;
+	ret = 0;
+out:
+	free(received);
+	free(expected);
+	dvbs2x_demodulator_destroy(&demod);
+	return ret;
+}
+
 static int test_large_buffer(const struct stream_fixture *fix)
 {
 	struct dvbs2x_demodulator demod;
@@ -209,7 +244,8 @@ static int test_modcod(unsigned int modcod_idx)
 	printf("  MODCOD %u...\n", modcod_idx);
 	if (fixture_init(&fix, modcod_idx) < 0)
 		return -1;
-	if (test_one_frame(&fix) < 0 || test_large_buffer(&fix) < 0 ||
+	if (test_one_frame(&fix) < 0 || test_bbframe(&fix) < 0 ||
+	    test_large_buffer(&fix) < 0 ||
 	    test_arbitrary_chunks(&fix) < 0)
 		goto out;
 	printf("    PASS\n");

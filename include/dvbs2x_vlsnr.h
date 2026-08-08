@@ -200,6 +200,14 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 					 unsigned int frame_capacity,
 					 unsigned int *frame_len);
 
+/* Recover a mode-adapted BBFRAME from pulse-shaped baseband samples. */
+int dvbs2x_demodulate_bbframe_ex(struct dvbs2x_demodulator *demod,
+				 const struct dvbs2x_complex *input,
+				 unsigned int in_len,
+				 uint8_t *bbframe,
+				 unsigned int frame_capacity,
+				 unsigned int *frame_len);
+
 /*
  * dvbs2x_demodulator_destroy - Release demodulator resources
  * @demod: demodulator context previously initialized with _init
@@ -314,6 +322,15 @@ int dvbs2x_demodulate_stream_ex(struct dvbs2x_demodulator *demod,
 				unsigned int user_capacity,
 				unsigned int *user_len,
 				unsigned int *consumed);
+
+/* Continuous-mode variant returning the mode-adapted BBFRAME. */
+int dvbs2x_demodulate_bbframe_stream_ex(struct dvbs2x_demodulator *demod,
+					const struct dvbs2x_complex *input,
+					unsigned int in_len,
+					uint8_t *bbframe,
+					unsigned int frame_capacity,
+					unsigned int *frame_len,
+					unsigned int *consumed);
 
 #ifdef __cplusplus
 }
