@@ -59,6 +59,15 @@ struct dvbs2x_modulator {
 	struct dvbs2x_rrc_filter	tx_filter;
 };
 
+/* Diagnostics from the most recent physical-layer decode attempt. */
+struct dvbs2x_demod_stats {
+	unsigned int	modcod;
+	double		sync_confidence;
+	double		esn0_db;
+	unsigned int	ldpc_iterations;
+	int		result;
+};
+
 /* Demodulator sync state machine */
 enum dvbs2x_demod_state {
 	DVBS2X_DEMOD_SEARCH = 0,	/* initial acquisition */
@@ -88,6 +97,7 @@ struct dvbs2x_demodulator {
 	struct dvbs2x_complex		*stream_buf;
 	unsigned int			stream_len;
 	unsigned int			stream_cap;
+	struct dvbs2x_demod_stats	last_stats;
 };
 
 /*
@@ -216,6 +226,10 @@ int dvbs2x_demodulate_bbframe_ex(struct dvbs2x_demodulator *demod,
  * decoder working memory.  Safe to call multiple times.
  */
 void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod);
+
+/* Copy diagnostics from the most recent decode attempt. */
+int dvbs2x_demodulator_get_stats(const struct dvbs2x_demodulator *demod,
+				 struct dvbs2x_demod_stats *stats);
 
 /*
  * dvbs2x_demodulate - Demodulate baseband IQ samples to user data

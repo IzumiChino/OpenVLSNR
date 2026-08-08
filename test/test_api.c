@@ -13,6 +13,7 @@ static int test_init_parameters(void)
 {
 	struct dvbs2x_modulator mod;
 	struct dvbs2x_demodulator demod;
+	struct dvbs2x_demod_stats stats;
 
 	if (dvbs2x_modulator_init(NULL, 1, 0.35, 2, 0) !=
 	    DVBS2X_ERR_PARAM ||
@@ -30,6 +31,11 @@ static int test_init_parameters(void)
 	if (dvbs2x_demodulator_init(NULL, 0.35, 2, 0) !=
 	    DVBS2X_ERR_PARAM ||
 	    dvbs2x_demodulator_init(&demod, 0.35, 1, 0) !=
+	    DVBS2X_ERR_PARAM)
+		return -1;
+	if (dvbs2x_demodulator_get_stats(NULL, &stats) !=
+	    DVBS2X_ERR_PARAM ||
+	    dvbs2x_demodulator_get_stats(&demod, NULL) !=
 	    DVBS2X_ERR_PARAM)
 		return -1;
 	dvbs2x_demodulator_destroy(&demod);

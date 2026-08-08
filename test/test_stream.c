@@ -111,6 +111,7 @@ static int test_bbframe(const struct stream_fixture *fix)
 {
 	struct dvbs2x_bb_frame_ctx bb;
 	struct dvbs2x_demodulator demod;
+	struct dvbs2x_demod_stats stats;
 	uint8_t *expected = NULL;
 	uint8_t *received = NULL;
 	unsigned int frame_samples = fix->sample_len / NUM_FRAMES;
@@ -133,6 +134,10 @@ static int test_bbframe(const struct stream_fixture *fix)
 		goto out;
 	if (consumed != frame_samples || received_len != fix->mc->k_bch ||
 	    memcmp(received, expected, received_len) != 0)
+		goto out;
+	if (dvbs2x_demodulator_get_stats(&demod, &stats) < 0 ||
+	    stats.result != 0 || stats.modcod != fix->mc->index ||
+	    stats.sync_confidence <= 0.0 || !stats.ldpc_iterations)
 		goto out;
 	ret = 0;
 out:

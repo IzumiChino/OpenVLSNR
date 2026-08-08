@@ -408,7 +408,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	unsigned int search_len;
 	unsigned int data_field_len, data_start;
 	unsigned int ndata, tx_coded;
-	unsigned int iter_used;
+	unsigned int iter_used = 0;
 	double conf, demap_nv, nv_est, esn0_db;
 	int ret = DVBS2X_ERR_FEC;
 
@@ -417,6 +417,8 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	*frame_len = 0;
 	if (!demod || !input || !bbframe || noise_var < 0.0)
 		return DVBS2X_ERR_PARAM;
+	memset(&demod->last_stats, 0, sizeof(demod->last_stats));
+	demod->last_stats.result = DVBS2X_ERR_NOSYNC;
 
 	if (in_len < DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN)
 		return DVBS2X_ERR_SHORT;
@@ -444,6 +446,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		search_len = ACQ_WINDOW + DVBS2X_VLSNR_WH_LEN;
 	conf = dvbs2x_vlsnr_header_sync(work, search_len, SYNC_SEG_LEN,
 					&wh_start, &modcod_idx);
+	demod->last_stats.sync_confidence = conf;
 	if (conf < 0.05) {
 		ret = DVBS2X_ERR_NOSYNC;
 		goto out;
@@ -454,6 +457,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		goto out;
 	}
 	demod->modcod = mc;
+	demod->last_stats.modcod = modcod_idx;
 
 	if (dvbs2x_vlsnr_build_layout(mc, &lay) < 0) {
 		ret = DVBS2X_ERR_NOMEM;
@@ -484,6 +488,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	/* Estimate noise/SNR from the header (robust to small offsets) */
 	nv_est = estimate_noise_var(work, wh_start, wh_ref + 2);
 	esn0_db = 10.0 * log10(1.0 / (2.0 * nv_est + 1e-12));
+	demod->last_stats.esn0_db = esn0_db;
 #ifdef DEBUG
 	fprintf(stderr, "[dbg] nv_est=%.4f esn0_est=%.2f dB\n",
 		nv_est, esn0_db);
@@ -649,6 +654,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	if (dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out,
 			       &iter_used) < 0)
 		ret = DVBS2X_ERR_FEC;
+	demod->last_stats.ldpc_iterations = iter_used;
 		/* Continue to BCH - best-effort decode */
 #ifdef DEBUG
 	fprintf(stderr, "[dbg] ldpc iter=%u/%u\n", iter_used,
@@ -699,7 +705,18 @@ out:
 	free(ldpc_out);
 	free(bch_cw);
 	dvbs2x_vlsnr_free_layout(&lay);
+	if (demod)
+		demod->last_stats.result = ret;
 	return ret;
+}
+
+int dvbs2x_demodulator_get_stats(const struct dvbs2x_demodulator *demod,
+				 struct dvbs2x_demod_stats *stats)
+{
+	if (!demod || !stats)
+		return DVBS2X_ERR_PARAM;
+	*stats = demod->last_stats;
+	return 0;
 }
 
 int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
