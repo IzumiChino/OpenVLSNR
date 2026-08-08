@@ -2,8 +2,9 @@
 /*
  * DVB-S2X VL-SNR MPEG-TS Mode Adaptation Tests
  *
- * Golden hashes were generated with GNU Radio 3.10.12.0 gr-dtv using
- * dvb_bbheader_bb followed by dvb_bbscrambler_bb.
+ * BBFRAME and PL symbol hashes were generated with GNU Radio 3.10.12.0
+ * gr-dtv.  The PL hashes cover its complete DVB-S2 transmit chain after
+ * removing the zero interpolation sample following each output symbol.
  */
 
 #include <stdint.h>
