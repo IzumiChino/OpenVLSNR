@@ -98,6 +98,7 @@ struct dvbs2x_demodulator {
 	unsigned int			stream_len;
 	unsigned int			stream_cap;
 	struct dvbs2x_demod_stats	last_stats;
+	volatile int			cancel_requested;
 };
 
 /*
@@ -230,6 +231,9 @@ void dvbs2x_demodulator_destroy(struct dvbs2x_demodulator *demod);
 /* Copy diagnostics from the most recent decode attempt. */
 int dvbs2x_demodulator_get_stats(const struct dvbs2x_demodulator *demod,
 				 struct dvbs2x_demod_stats *stats);
+
+/* Request cancellation of a long-running receive operation. */
+void dvbs2x_demodulator_request_cancel(struct dvbs2x_demodulator *demod);
 
 /*
  * dvbs2x_demodulate - Demodulate baseband IQ samples to user data

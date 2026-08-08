@@ -359,6 +359,11 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 
 	/* Iterative decoding (layered schedule) */
 	for (iter = 0; iter < dec->max_iter; iter++) {
+		if (dec->cancel_flag && *dec->cancel_flag) {
+			if (iter_used)
+				*iter_used = iter;
+			return -1;
+		}
 
 		/* For each check node (row of H): layered sum-product */
 		for (i = 0; i < m; i++) {
@@ -450,4 +455,3 @@ int dvbs2x_ldpc_decode(const struct dvbs2x_ldpc_decoder *dec,
 
 	return ret;
 }
-

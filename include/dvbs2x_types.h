@@ -19,6 +19,7 @@
 #define DVBS2X_ERR_FEC		(-4)	/* LDPC did not converge */
 #define DVBS2X_ERR_CRC		(-5)	/* BCH or BB frame CRC failure */
 #define DVBS2X_ERR_SHORT	(-6)	/* input too short */
+#define DVBS2X_ERR_CANCELLED	(-7)	/* operation cancelled */
 
 /* Frame lengths (LDPC codeword bits) */
 #define DVBS2X_LDPC_NORMAL	64800

@@ -64,6 +64,7 @@ struct dvbs2x_ldpc_decoder {
 	double			*work_v2c;	/* max_deg+1 doubles */
 	double			*work_fwd;	/* max_deg+1 doubles */
 	double			*work_bwd;	/* max_deg+1 doubles */
+	const volatile int	*cancel_flag;
 };
 
 /*

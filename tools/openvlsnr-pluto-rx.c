@@ -31,11 +31,13 @@ struct rx_options {
 
 static volatile sig_atomic_t stop_requested;
 static struct pluto_stream *active_stream;
+static struct dvbs2x_demodulator *active_demod;
 
 static void stop_handler(int signal)
 {
 	(void)signal;
 	stop_requested = 1;
+	dvbs2x_demodulator_request_cancel(active_demod);
 	pluto_stream_cancel(active_stream);
 }
 
@@ -272,6 +274,7 @@ int main(int argc, char **argv)
 	if (pluto_rx_open(&stream, &config, PLUTO_BUFFER_SAMPLES) < 0)
 		goto out;
 	active_stream = &stream;
+	active_demod = &demod;
 	if (signal(SIGINT, stop_handler) == SIG_ERR ||
 	    signal(SIGTERM, stop_handler) == SIG_ERR)
 		goto out;
@@ -366,6 +369,7 @@ int main(int argc, char **argv)
 	ret = 0;
 out:
 	active_stream = NULL;
+	active_demod = NULL;
 	pluto_stream_close(&stream);
 	dvbs2x_demodulator_destroy(&demod);
 	free(samples);

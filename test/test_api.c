@@ -14,6 +14,9 @@ static int test_init_parameters(void)
 	struct dvbs2x_modulator mod;
 	struct dvbs2x_demodulator demod;
 	struct dvbs2x_demod_stats stats;
+	struct dvbs2x_complex sample = { 0.0, 0.0 };
+	uint8_t frame[1];
+	unsigned int frame_len;
 
 	if (dvbs2x_modulator_init(NULL, 1, 0.35, 2, 0) !=
 	    DVBS2X_ERR_PARAM ||
@@ -39,6 +42,14 @@ static int test_init_parameters(void)
 	    DVBS2X_ERR_PARAM)
 		return -1;
 	dvbs2x_demodulator_destroy(&demod);
+	dvbs2x_demodulator_destroy(&demod);
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	dvbs2x_demodulator_request_cancel(&demod);
+	if (dvbs2x_demodulate_bbframe_symbols_ex(
+		    &demod, &sample, 1, 0.0, frame, 1, &frame_len) !=
+	    DVBS2X_ERR_CANCELLED || frame_len != 0)
+		return -1;
 	dvbs2x_demodulator_destroy(&demod);
 	dvbs2x_demodulator_destroy(NULL);
 	dvbs2x_modulator_destroy(NULL);

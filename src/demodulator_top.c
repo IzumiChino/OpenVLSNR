@@ -419,6 +419,10 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		return DVBS2X_ERR_PARAM;
 	memset(&demod->last_stats, 0, sizeof(demod->last_stats));
 	demod->last_stats.result = DVBS2X_ERR_NOSYNC;
+	if (demod->cancel_requested) {
+		demod->last_stats.result = DVBS2X_ERR_CANCELLED;
+		return DVBS2X_ERR_CANCELLED;
+	}
 
 	if (in_len < DVBS2X_PLHEADER_LEN + DVBS2X_VLSNR_WH_LEN)
 		return DVBS2X_ERR_SHORT;
@@ -646,6 +650,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 			goto out;
 		}
 	}
+	demod->ldpc_dec.cancel_flag = &demod->cancel_requested;
 	ldpc_out = malloc(mc->k_ldpc);
 	if (!ldpc_out) {
 		ret = DVBS2X_ERR_NOMEM;
@@ -653,8 +658,11 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	}
 	if (dvbs2x_ldpc_decode(&demod->ldpc_dec, deint, ldpc_out,
 			       &iter_used) < 0)
-		ret = DVBS2X_ERR_FEC;
+		ret = demod->cancel_requested ? DVBS2X_ERR_CANCELLED :
+			DVBS2X_ERR_FEC;
 	demod->last_stats.ldpc_iterations = iter_used;
+	if (ret == DVBS2X_ERR_CANCELLED)
+		goto out;
 		/* Continue to BCH - best-effort decode */
 #ifdef DEBUG
 	fprintf(stderr, "[dbg] ldpc iter=%u/%u\n", iter_used,
@@ -717,6 +725,12 @@ int dvbs2x_demodulator_get_stats(const struct dvbs2x_demodulator *demod,
 		return DVBS2X_ERR_PARAM;
 	*stats = demod->last_stats;
 	return 0;
+}
+
+void dvbs2x_demodulator_request_cancel(struct dvbs2x_demodulator *demod)
+{
+	if (demod)
+		demod->cancel_requested = 1;
 }
 
 int dvbs2x_demodulate_symbols_ex(struct dvbs2x_demodulator *demod,
