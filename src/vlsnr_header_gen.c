@@ -218,6 +218,15 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 
 	/* Slide a correlation window over the input */
 	for (pos = 0; pos + DVBS2X_VLSNR_WH_LEN <= len; pos++) {
+		double energy = 0.0;
+		double norm;
+
+		for (n = 0; n < DVBS2X_VLSNR_WH_LEN; n++)
+			energy += symbols[pos + n].i * symbols[pos + n].i +
+				  symbols[pos + n].q * symbols[pos + n].q;
+		if (energy <= 0.0)
+			continue;
+		norm = sqrt((double)DVBS2X_VLSNR_WH_LEN * energy);
 		for (mc = 0; mc < DVBS2X_VLSNR_NUM_MODCODS; mc++) {
 			const struct dvbs2x_complex *rf = vlsnr_ref[mc];
 			double seg_mag = 0.0;
@@ -247,8 +256,7 @@ double dvbs2x_vlsnr_header_sync(const struct dvbs2x_complex *symbols,
 				seg_mag += sqrt(si * si + sq * sq);
 			}
 
-			corr = seg_mag /
-			       (double)DVBS2X_VLSNR_WH_LEN;
+			corr = seg_mag / norm;
 			if (corr > best_corr) {
 				best_corr = corr;
 				best_offset = pos;

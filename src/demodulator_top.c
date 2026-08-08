@@ -451,7 +451,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 	conf = dvbs2x_vlsnr_header_sync(work, search_len, SYNC_SEG_LEN,
 					&wh_start, &modcod_idx);
 	demod->last_stats.sync_confidence = conf;
-	if (conf < 0.05) {
+	if (conf < 0.45) {
 		ret = DVBS2X_ERR_NOSYNC;
 		goto out;
 	}
@@ -1007,12 +1007,20 @@ static int demodulate_stream_ex(struct dvbs2x_demodulator *demod,
 	dvbs2x_demod_lock_update(demod, ret == 0);
 
 	/*
-	 * Remove exactly one decoded or identified frame.  If no header was
-	 * found, discard one sample so SEARCH can make forward progress while
-	 * retaining the rest of the acquisition window.
+	 * Remove exactly one decoded or identified frame.  A failed search has
+	 * examined the complete acquisition window, so retain only enough of
+	 * that window for a header which crosses the next chunk boundary.
 	 */
-	if (!frame_samples || frame_samples > demod->stream_len)
-		frame_samples = 1;
+	if (!frame_samples || frame_samples > demod->stream_len) {
+		unsigned int retain;
+
+		retain = (DVBS2X_VLSNR_WH_LEN + demod->rx_filter.num_taps) *
+			demod->timing.sps;
+		if (demod->stream_len > retain)
+			frame_samples = demod->stream_len - retain;
+		else
+			frame_samples = 1;
+	}
 	demod->stream_len -= frame_samples;
 	memmove(demod->stream_buf, demod->stream_buf + frame_samples,
 		demod->stream_len * sizeof(*demod->stream_buf));

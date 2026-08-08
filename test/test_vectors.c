@@ -180,6 +180,30 @@ static uint64_t hash_layouts(void)
 	return hash;
 }
 
+static int test_header_scale(void)
+{
+	struct dvbs2x_complex header[DVBS2X_VLSNR_HDR_LEN];
+	const struct dvbs2x_modcod *mc;
+	unsigned int offset = UINT32_MAX;
+	unsigned int modcod = 0;
+	unsigned int i;
+	double confidence;
+
+	mc = dvbs2x_vlsnr_get_modcod(9);
+	if (!mc)
+		return -1;
+	dvbs2x_vlsnr_header_generate(mc, header);
+	for (i = 0; i < DVBS2X_VLSNR_HDR_LEN; i++) {
+		header[i].i *= 0.001;
+		header[i].q *= 0.001;
+	}
+	confidence = dvbs2x_vlsnr_header_sync(header + 2,
+		DVBS2X_VLSNR_WH_LEN, 128, &offset, &modcod);
+	if (confidence < 0.99 || offset || modcod != mc->index)
+		return -1;
+	return 0;
+}
+
 int main(void)
 {
 	unsigned int index;
@@ -190,7 +214,7 @@ int main(void)
 	    hash_ldpc_tables() != GOLDEN_LDPC ||
 	    hash_pl_scrambling() != GOLDEN_SCRAMBLING ||
 	    hash_pls() != GOLDEN_PLS || hash_fec_positions() != GOLDEN_FEC ||
-	    hash_layouts() != GOLDEN_LAYOUT) {
+	    hash_layouts() != GOLDEN_LAYOUT || test_header_scale() < 0) {
 		printf("FAIL: golden fingerprint mismatch\n");
 		return 1;
 	}

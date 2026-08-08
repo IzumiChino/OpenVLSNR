@@ -260,6 +260,38 @@ out:
 	return ret;
 }
 
+static int test_search_progress(void)
+{
+	struct dvbs2x_demodulator demod;
+	struct dvbs2x_complex *samples = NULL;
+	uint8_t *received = NULL;
+	unsigned int sample_len = DVBS2X_VLSNR_FRAME_SHORT * 2;
+	unsigned int received_len = 0;
+	unsigned int consumed = 0;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	samples = calloc(sample_len, sizeof(*samples));
+	received = calloc(DVBS2X_LDPC_NORMAL, 1);
+	if (!samples || !received)
+		goto out;
+	if (dvbs2x_demodulate_stream(&demod, samples, sample_len,
+				     received, &received_len, &consumed) !=
+	    DVBS2X_ERR_NOSYNC || consumed != sample_len)
+		goto out;
+	if (dvbs2x_demodulate_stream(&demod, NULL, 0, received,
+				     &received_len, &consumed) !=
+	    DVBS2X_ERR_SHORT)
+		goto out;
+	ret = 0;
+out:
+	free(samples);
+	free(received);
+	dvbs2x_demodulator_destroy(&demod);
+	return ret;
+}
+
 int main(void)
 {
 	static const unsigned int modcods[] = { 1, 2, 9 };
@@ -267,6 +299,10 @@ int main(void)
 
 	printf("DVB-S2X VL-SNR Streaming Tests\n");
 	printf("===============================\n");
+	if (test_search_progress() < 0) {
+		printf("  SEARCH progress: FAIL\n");
+		return 1;
+	}
 	for (i = 0; i < sizeof(modcods) / sizeof(modcods[0]); i++) {
 		if (test_modcod(modcods[i]) < 0) {
 			printf("    FAIL\n");
