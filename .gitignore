@@ -13,8 +13,9 @@
 # Out-of-tree build directory
 /build/
 
-# Local verification tools and helper scripts, not part of the library
-/tools/
+# Compiled hardware tools
+/tools/openvlsnr-pluto-tx
+/tools/openvlsnr-pluto-rx
 /check_full_style.sh
 /streaming/netdev_audit.sh
 
