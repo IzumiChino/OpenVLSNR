@@ -107,6 +107,41 @@ out:
 	return ret;
 }
 
+static int test_scaled_frame(const struct stream_fixture *fix)
+{
+	struct dvbs2x_demodulator demod;
+	struct dvbs2x_complex *samples = NULL;
+	uint8_t *received = NULL;
+	unsigned int frame_samples = fix->sample_len / NUM_FRAMES;
+	unsigned int received_len = 0;
+	unsigned int consumed = 0;
+	unsigned int i;
+	int ret = -1;
+
+	if (dvbs2x_demodulator_init(&demod, 0.35, 2, 0) < 0)
+		return -1;
+	samples = malloc(frame_samples * sizeof(*samples));
+	received = calloc(fix->mc->k_bch, 1);
+	if (!samples || !received)
+		goto out;
+	for (i = 0; i < frame_samples; i++) {
+		samples[i].i = fix->samples[i].i * 0.001;
+		samples[i].q = fix->samples[i].q * 0.001;
+	}
+	if (dvbs2x_demodulate_stream(&demod, samples, frame_samples,
+				     received, &received_len, &consumed) < 0)
+		goto out;
+	if (consumed != frame_samples ||
+	    check_frame(fix, received, received_len, 0) != 0)
+		goto out;
+	ret = 0;
+out:
+	free(samples);
+	free(received);
+	dvbs2x_demodulator_destroy(&demod);
+	return ret;
+}
+
 static int test_bbframe(const struct stream_fixture *fix)
 {
 	struct dvbs2x_bb_frame_ctx bb;
@@ -249,7 +284,8 @@ static int test_modcod(unsigned int modcod_idx)
 	printf("  MODCOD %u...\n", modcod_idx);
 	if (fixture_init(&fix, modcod_idx) < 0)
 		return -1;
-	if (test_one_frame(&fix) < 0 || test_bbframe(&fix) < 0 ||
+	if (test_one_frame(&fix) < 0 || test_scaled_frame(&fix) < 0 ||
+	    test_bbframe(&fix) < 0 ||
 	    test_large_buffer(&fix) < 0 ||
 	    test_arbitrary_chunks(&fix) < 0)
 		goto out;

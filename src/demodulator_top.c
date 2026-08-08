@@ -182,6 +182,50 @@ static double estimate_noise_var(const struct dvbs2x_complex *sym,
 }
 
 /*
+ * Normalize gross front-end gain from coherent header segments.  Pluto and
+ * other SDR sample formats do not promise a particular complex amplitude,
+ * while the pilot demapper compares against a unit-energy constellation.
+ * Segment magnitudes tolerate the same residual frequency offset as sync.
+ */
+static void normalize_input_level(struct dvbs2x_complex *sym,
+				  unsigned int len, unsigned int wh_start,
+				  const struct dvbs2x_complex *wh_ref)
+{
+	double magnitude = 0.0;
+	double scale;
+	unsigned int start;
+	unsigned int n;
+
+	for (start = 0; start < DVBS2X_VLSNR_WH_LEN;
+	     start += SYNC_SEG_LEN) {
+		double si = 0.0;
+		double sq = 0.0;
+		unsigned int end = start + SYNC_SEG_LEN;
+
+		if (end > DVBS2X_VLSNR_WH_LEN)
+			end = DVBS2X_VLSNR_WH_LEN;
+		for (n = start; n < end; n++) {
+			const struct dvbs2x_complex *sample = &sym[wh_start + n];
+
+			si += sample->i * wh_ref[n].i +
+			      sample->q * wh_ref[n].q;
+			sq += sample->q * wh_ref[n].i -
+			      sample->i * wh_ref[n].q;
+		}
+		magnitude += sqrt(si * si + sq * sq);
+	}
+	magnitude /= (double)DVBS2X_VLSNR_WH_LEN;
+	if (magnitude <= 0.0 ||
+	    (magnitude >= 0.25 && magnitude <= 4.0))
+		return;
+	scale = 1.0 / magnitude;
+	for (n = 0; n < len; n++) {
+		sym[n].i *= scale;
+		sym[n].q *= scale;
+	}
+}
+
+/*
  * Coarse carrier-frequency recovery from the WH header.  Only applied
  * when the estimated Es/N0 is high enough to trust a header-only
  * estimate (large offsets are otherwise left to acquisition at higher
@@ -488,6 +532,7 @@ int dvbs2x_demodulate_bbframe_symbols_ex(struct dvbs2x_demodulator *demod,
 		goto out;
 	}
 	dvbs2x_vlsnr_header_generate(mc, wh_ref);
+	normalize_input_level(work, in_len, wh_start, wh_ref + 2);
 
 	/* Estimate noise/SNR from the header (robust to small offsets) */
 	nv_est = estimate_noise_var(work, wh_start, wh_ref + 2);
